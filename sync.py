@@ -2,8 +2,8 @@ import os
 from datetime import datetime, timedelta, timezone
 import requests
 
-SM_TOKEN = os.environ["OwEeRineBkybfvjhErbpLC9XPselqjFdGSkqJRa2Tg1dOwPAnc4kdXFtGE3O"]
-WF_TOKEN = os.environ["f02b9e2660c8cb1598211689ffdf102f3aeee1d8183c1cbe5089a8d36500a883"]
+SM_TOKEN = os.environ["SPORTSMONKS_API_TOKEN"]
+WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
 
 TEAM_ID = 232744
 COLLECTION_ID = "68c415c140c71006d646fbe3"
