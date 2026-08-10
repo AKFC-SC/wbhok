@@ -12,6 +12,21 @@ COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
 SM_BASE = "https://api.sportmonks.com/v3/football/fixtures/between"
 WF_BASE = "https://api.webflow.com/v2"
+ 
+    def test_collection():
+    url = f"{WF_BASE}/collections/{COLLECTION_ID}"
+
+    r = requests.get(
+        url,
+        headers=wf_headers(),
+        timeout=30
+    )
+
+    print("COLLECTION STATUS:", r.status_code)
+    print("COLLECTION RESPONSE:", r.text)
+
+    r.raise_for_status()
+
 
 
 def sm_fixtures():
