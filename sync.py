@@ -98,8 +98,11 @@ def create_webflow_item(field_data):
         timeout=30,
     )
 
+    if not response.ok:
+    print("WEBFLOW STATUS:", response.status_code)
+    print("WEBFLOW RESPONSE:", response.text)
     response.raise_for_status()
-    return response.json()
+
 
 
 def update_webflow_item(item_id, field_data):
