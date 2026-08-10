@@ -24,7 +24,7 @@ def sm_fixtures():
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
 
-    return r.json().get("data", []) 
+    return r.json().get("data". []) 
 
 def wf_headers():
     return {"Authorization": f"Bearer {WF_TOKEN}", "Content-Type": "application/json"}
