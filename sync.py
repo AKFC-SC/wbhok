@@ -99,9 +99,9 @@ def create_webflow_item(field_data):
     )
 
     if not response.ok:
-    print("WEBFLOW STATUS:", response.status_code)
-    print("WEBFLOW RESPONSE:", response.text)
-    response.raise_for_status()
+        print("WEBFLOW STATUS:", response.status_code)
+        print("WEBFLOW RESPONSE:", response.text)
+        response.raise_for_status()
 
 
 
