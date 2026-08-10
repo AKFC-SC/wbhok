@@ -7,7 +7,7 @@ WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
 
 TEAM_ID = 232744
 COLLECTION_ID = "68c415c140c71006d646fbe3"
-SM_URL = "https://api.sportmonks.com/v3/football/fixtures/between/"
+SM_URL = "https://api.sportmonks.com/v3/football/fixtures/between"
 WF_BASE = "https://api.webflow.com/v2"
 
 def sm_fixtures():
