@@ -16,12 +16,6 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -r requirements.txt
-
-      - name: Check Test GitHub variables
-        env:
-          TEST_VALUE: ${{ vars.TEST_VALUE }}
-        run: |
-            echo "TEST_VALUE =[$TEST_VALUE]"
           
       - name: Sync Fixtures
         env:
