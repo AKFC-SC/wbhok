@@ -1,102 +1,165 @@
 import os
 from datetime import datetime, timedelta, timezone
+
 import requests
+
 
 SM_TOKEN = os.environ["SPORTSMONKS_API_TOKEN"]
 WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
 
 TEAM_ID = 232744
 COLLECTION_ID = "68c415c140c71006d646fbe3"
-SM_URL = "https://api.sportmonks.com/v3/football/fixtures/between"
+
+SM_BASE = "https://api.sportmonks.com/v3/football/fixtures/between"
 WF_BASE = "https://api.webflow.com/v2"
+
 
 def sm_fixtures():
     start = datetime.now(timezone.utc).date()
     end = start + timedelta(days=365)
 
-    url = f"{SM_URL}/{start.isoformat()}/{end.isoformat()}/{TEAM_ID}"
+    url = f"{SM_BASE}/{start.isoformat()}/{end.isoformat()}/{TEAM_ID}"
 
     params = {
         "api_token": SM_TOKEN,
         "include": "participants;venue;league;state",
     }
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
 
-    return r.json().get("data". []) 
+    return response.json().get("data", [])
+
 
 def wf_headers():
-    return {"Authorization": f"Bearer {WF_TOKEN}", "Content-Type": "application/json"}
+    return {
+        "Authorization": f"Bearer {WF_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
 
 def wf_items():
-    r = requests.get(
-        f"{WF_BASE}/collections/{COLLECTION_ID}/items",
+    url = f"{WF_BASE}/collections/{COLLECTION_ID}/items"
+
+    response = requests.get(
+        url,
         headers=wf_headers(),
         params={"limit": 100},
         timeout=30,
     )
-    r.raise_for_status()
-    return r.json().get("items", [])
 
-def normalize(x):
-    parts = x.get("participants") or []
-    home = next((p for p in parts if (p.get("meta") or {}).get("location") == "home"), None)
-    away = next((p for p in parts if (p.get("meta") or {}).get("location") == "away"), None)
-    if not home and parts: home = parts[0]
-    if not away and len(parts) > 1: away = parts[1]
-    state = x.get("state") or {}
-    venue = x.get("venue") or {}
-    league = x.get("league") or {}
+    response.raise_for_status()
+    return response.json().get("items", [])
+
+
+def fixture_name(fixture):
+    return fixture.get("name") or f"Fixture {fixture.get('id')}"
+
+
+def fixture_slug(fixture):
+    fixture_id = fixture.get("id")
+    return f"fixture-{fixture_id}"
+
+
+def fixture_date(fixture):
+    value = fixture.get("starting_at")
+
+    if not value:
+        return ""
+
+    return value
+
+
+def fixture_field_data(fixture):
+    name = fixture_name(fixture)
+
     return {
-        "sportsmonks_id": str(x.get("id", "")),
-        "home_name": (home or {}).get("name", ""),
-        "away_name": (away or {}).get("name", ""),
-        "home_logo": (home or {}).get("image_path", ""),
-        "away_logo": (away or {}).get("image_path", ""),
-        "competition": league.get("name", ""),
-        "starting_at": x.get("starting_at", ""),
-        "venue": venue.get("name", ""),
-        "status": state.get("short_name") or state.get("name") or "",
+        "name": name,
+        "slug": fixture_slug(fixture),
+        "fixture-id": str(fixture.get("id", "")),
+        "starting-at": fixture_date(fixture),
+        "venue": (fixture.get("venue") or {}).get("name", ""),
+        "league": (fixture.get("league") or {}).get("name", ""),
+        "state": (fixture.get("state") or {}).get("name", ""),
     }
 
-def fields(f):
-    # Replace these keys with your exact Webflow CMS field slugs.
-    return {
-        "sportsmonks-id": f["sportsmonks_id"],
-        "status": f["status"],
-        "home-team-name": f["home_name"],
-        "away-team-name": f["away_name"],
-        "date-time": f["starting_at"],
-        "venue": f["venue"],
-        "time": f["starting_at"],
+
+def create_webflow_item(field_data):
+    url = f"{WF_BASE}/collections/{COLLECTION_ID}/items"
+
+    payload = {
+        "fieldData": field_data,
     }
+
+    response = requests.post(
+        url,
+        headers=wf_headers(),
+        json=payload,
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def update_webflow_item(item_id, field_data):
+    url = f"{WF_BASE}/collections/{COLLECTION_ID}/items/{item_id}"
+
+    payload = {
+        "fieldData": field_data,
+    }
+
+    response = requests.patch(
+        url,
+        headers=wf_headers(),
+        json=payload,
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def sync_fixtures():
+    fixtures = sm_fixtures()
+    existing_items = wf_items()
+
+    existing_by_fixture_id = {}
+
+    for item in existing_items:
+        field_data = item.get("fieldData") or {}
+        fixture_id = field_data.get("fixture-id")
+
+        if fixture_id:
+            existing_by_fixture_id[str(fixture_id)] = item
+
+    created = 0
+    updated = 0
+
+    for fixture in fixtures:
+        fixture_id = str(fixture.get("id", ""))
+
+        if not fixture_id:
+            continue
+
+        field_data = fixture_field_data(fixture)
+        existing = existing_by_fixture_id.get(fixture_id)
+
+        if existing:
+            update_webflow_item(existing["id"], field_data)
+            updated += 1
+        else:
+            create_webflow_item(field_data)
+            created += 1
+
+    print(f"Fixtures received: {len(fixtures)}")
+    print(f"Webflow items created: {created}")
+    print(f"Webflow items updated: {updated}")
+
 
 def main():
-    fixtures = sm_fixtures()
-    existing = {}
-    for item in wf_items():
-        fd = item.get("fieldData") or {}
-        if fd.get("sportsmonks-id"):
-            existing[str(fd["sportsmonks-id"])] = item
+    sync_fixtures()
 
-    for x in fixtures:
-        f = normalize(x)
-        if not f["sportsmonks_id"]:
-            continue
-        data = {"fieldData": fields(f)}
-        old = existing.get(f["sportsmonks_id"])
-        if old:
-            r = requests.patch(
-                f"{WF_BASE}/collections/{COLLECTION_ID}/items/{old['id']}",
-                headers=wf_headers(), json=data, timeout=30)
-        else:
-            data.update({"isArchived": False, "isDraft": True})
-            r = requests.post(
-                f"{WF_BASE}/collections/{COLLECTION_ID}/items",
-                headers=wf_headers(), json=data, timeout=30)
-        r.raise_for_status()
-        print(("Updated " if old else "Created ") + f["sportsmonks_id"])
 
 if __name__ == "__main__":
     main()
