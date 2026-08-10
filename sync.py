@@ -7,22 +7,24 @@ WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
 
 TEAM_ID = 232744
 COLLECTION_ID = "68c415c140c71006d646fbe3"
-SM_URL = "https://api.sportmonks.com/v3/football/fixtures/date"
+SM_URL = "https://api.sportmonks.com/v3/football/fixtures/between/"
 WF_BASE = "https://api.webflow.com/v2"
 
 def sm_fixtures():
     start = datetime.now(timezone.utc).date()
     end = start + timedelta(days=365)
+
+    url = f"{SM_URL}/{start.isoformat()}/{end.isoformat()}/{TEAM_ID}"
+
     params = {
         "api_token": SM_TOKEN,
-        "team_id": TEAM_ID,
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "include": "state;venue;participants;league",
+        "include": "participants;venue;league;state",
     }
-    r = requests.get(SM_URL, params=params, timeout=30)
+
+    r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
-    return r.json().get("data", [])
+
+    return r.json().get("data", []) 
 
 def wf_headers():
     return {"Authorization": f"Bearer {WF_TOKEN}", "Content-Type": "application/json"}
