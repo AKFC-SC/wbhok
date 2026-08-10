@@ -17,18 +17,12 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Check Sportmonks token
+      - name: Check Test GitHub variables
         env:
-          SM_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKEN }}
+          TEST_VALUE: ${{ vars.TEST_VALUE }}
         run: |
-          if [ -z "$SM_TOKEN" ]; then
-            echo "SPORTSMONKS_API_TOKEN is EMPTY"
-          exit 1
-          fi
-
-          echo "SPORTSMONKS_API_TOKEN exists"
-          echo "Token length: ${#SM_TOKEN}"
-
+            echo "TEST_VALUE =[$TEST_VALUE]"
+          
       - name: Sync Fixtures
         env:
           SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKEN }}
