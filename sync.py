@@ -72,15 +72,14 @@ def fixture_date(fixture):
 def fixture_field_data(fixture):
     name = fixture_name(fixture)
 
-    return {
-        "name": name,
-        "slug": fixture_slug(fixture),
-        "fixture-id": str(fixture.get("id", "")),
-        "starting-at": fixture_date(fixture),
-        "venue": (fixture.get("venue") or {}).get("name", ""),
-        "league": (fixture.get("league") or {}).get("name", ""),
-        "state": (fixture.get("state") or {}).get("name", ""),
-    }
+   return {
+    "name": name,
+    "slug": fixture_slug(fixture),
+    "sportsmonks-id": str(fixture.get("id", "")),
+    "date-time": fixture_date(fixture),
+    "venue": (fixture.get("venue") or {}).get("name", ""),
+    "league": (fixture.get("league") or {}).get("name", ""),
+    "status": (fixture.get("state") or {}).get("name", ""),
 
 
 def create_webflow_item(field_data):
