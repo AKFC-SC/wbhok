@@ -140,7 +140,7 @@ def fixture_slug(fixture):
 
 def fixture_date(fixture):
 
-    value = fixture.get("starting_at")
+    value = fixture.get("date-time")
 
     if not value:
         return ""
@@ -211,7 +211,7 @@ def fixture_field_data(fixture):
     state = fixture.get("state") or {}
     venue = fixture.get("venue") or {}
 
-    starting_at = fixture_date(fixture)
+    date-time = fixture_date(fixture)
 
     field_data = {
 
@@ -268,10 +268,10 @@ def fixture_field_data(fixture):
 
         # ---------------------------------------------
         # DATE / TIME
-        # Webflow slug = starting-at
+        # Webflow slug = date-time
         # ---------------------------------------------
 
-        "starting-at": starting_at,
+        "date-time": date-time,
 
 
         # ---------------------------------------------
