@@ -102,7 +102,7 @@ def team_logo(team):
 
 def sm_fixtures():
     start = datetime.now(timezone.utc).date()
-    end = start + timedelta(days=365)
+    end = start + timedelta(days=90)
 
     url = (
         f"{SM_BASE}/fixtures/between/"
