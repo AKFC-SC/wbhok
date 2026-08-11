@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -17,6 +18,9 @@ COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
 SM_BASE = "https://api.sportmonks.com/v3/football"
 WF_BASE = "https://api.webflow.com/v2"
+
+# Saudi Arabia timezone
+RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
 
 # ============================================================
@@ -51,6 +55,10 @@ def safe_text(value):
 def fixture_slug(fixture):
     return f"fixture-{fixture.get('id', '')}"
 
+
+# ============================================================
+# PARTICIPANTS
+# ============================================================
 
 def get_participants(fixture):
 
@@ -170,6 +178,7 @@ def fixture_date(fixture):
             value.replace("Z", "+00:00")
         )
 
+        # Webflow DateTime requires ISO UTC
         return (
             dt.astimezone(timezone.utc)
             .isoformat(timespec="milliseconds")
@@ -179,6 +188,34 @@ def fixture_date(fixture):
     except Exception:
 
         return value
+
+
+# ============================================================
+# TIME
+# ============================================================
+
+def fixture_time(fixture):
+
+    value = fixture.get("starting_at")
+
+    if not value:
+        return ""
+
+    try:
+
+        dt = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+
+        # Convert UTC time to Saudi time
+        dt = dt.astimezone(RIYADH_TZ)
+
+        # Example: 06:00 PM
+        return dt.strftime("%I:%M %p")
+
+    except Exception:
+
+        return ""
 
 
 # ============================================================
@@ -227,7 +264,6 @@ def sm_fixtures():
 
     today = datetime.now(timezone.utc).date()
 
-    # Season end
     season_end = datetime(
         2027,
         6,
@@ -239,8 +275,7 @@ def sm_fixtures():
 
     current_start = today
 
-    # SportsMonks allows maximum 100 days
-    # per between request.
+    # SportsMonks maximum range is 100 days
     while current_start <= season_end:
 
         current_end = min(
@@ -248,11 +283,6 @@ def sm_fixtures():
             season_end
         )
 
-        # IMPORTANT:
-        # TEAM_ID is inside the URL.
-        #
-        # /fixtures/between/START/END/TEAM_ID
-        #
         url = (
             f"{SM_BASE}/fixtures/between/"
             f"{current_start.isoformat()}/"
@@ -480,7 +510,10 @@ def wf_items():
 # FIELD DATA
 # ============================================================
 
-def fixture_field_data(fixture):
+def fixture_field_data(
+    fixture,
+    include_logos=False
+):
 
     home, away = get_participants(
         fixture
@@ -498,46 +531,68 @@ def fixture_field_data(fixture):
 
     state = fixture.get("state") or {}
 
-    home_logo = team_logo(home)
-    away_logo = team_logo(away)
-    tournament_logo = league_logo(fixture)
-
     field_data = {
 
-        # Webflow required fields
+        # ====================================================
+        # REQUIRED FIELDS
+        # ====================================================
+
         "name": fixture_name(fixture),
 
         "slug": fixture_slug(fixture),
 
-        # Teams
+        # ====================================================
+        # TEAMS
+        # ====================================================
+
         "home-team-name": home_name,
 
         "away-team-name": away_name,
 
-        # Date
+        # ====================================================
+        # DATE + TIME
+        # ====================================================
+
         "date-time": fixture_date(fixture),
 
-        # Venue
+        "time-3": fixture_time(fixture),
+
+        # ====================================================
+        # VENUE
+        # ====================================================
+
         "venue": safe_text(
             venue.get("name", "")
         ),
 
-        # League
+        # ====================================================
+        # LEAGUE
+        # ====================================================
+
         "league": safe_text(
             league.get("name", "")
         ),
 
-        # SportsMonks ID
+        # ====================================================
+        # SPORTSMONKS ID
+        # ====================================================
+
         "sportsmonks-id": safe_text(
             fixture.get("id", "")
         ),
 
-        # State
+        # ====================================================
+        # STATUS
+        # ====================================================
+
         "status": safe_text(
             state.get("name", "")
         ),
 
-        # Scores
+        # ====================================================
+        # SCORES
+        # ====================================================
+
         "home-team-score": get_score(
             fixture,
             home_id
@@ -550,34 +605,41 @@ def fixture_field_data(fixture):
     }
 
     # ========================================================
-    # HOME LOGO
+    # LOGOS
+    #
+    # IMPORTANT:
+    # Logos are ONLY added when creating a new Webflow item.
+    #
+    # Existing items will NOT receive logo updates.
     # ========================================================
 
-    if home_logo:
+    if include_logos:
 
-        field_data[
-            "opposing-team-logo"
-        ] = home_logo
+        home_logo = team_logo(home)
 
-    # ========================================================
-    # AWAY LOGO
-    # ========================================================
+        if home_logo:
 
-    if away_logo:
+            field_data[
+                "opposing-team-logo"
+            ] = home_logo
 
-        field_data[
-            "away-team-logo"
-        ] = away_logo
+        away_logo = team_logo(away)
 
-    # ========================================================
-    # TOURNAMENT / LEAGUE LOGO
-    # ========================================================
+        if away_logo:
 
-    if tournament_logo:
+            field_data[
+                "away-team-logo"
+            ] = away_logo
 
-        field_data[
-            "tournament-logo"
-        ] = tournament_logo
+        tournament_logo = league_logo(
+            fixture
+        )
+
+        if tournament_logo:
+
+            field_data[
+                "tournament-logo"
+            ] = tournament_logo
 
     return field_data
 
@@ -645,6 +707,11 @@ def update_webflow_item(
         f"{COLLECTION_ID}/items/"
         f"{item_id}"
     )
+
+    # IMPORTANT:
+    # field_data does NOT contain any logo fields.
+    #
+    # Therefore existing Webflow logos are untouched.
 
     payload = {
         "fieldData": field_data
@@ -759,21 +826,27 @@ def sync_fixtures():
             fixture_id
         )
 
-        field_data = fixture_field_data(
-            fixture
-        )
-
         existing = (
             existing_by_fixture_id.get(
                 fixture_id
             )
         )
 
+        # ====================================================
+        # EXISTING FIXTURE
+        # ====================================================
+
         if existing:
 
             print(
                 "Updating fixture",
                 fixture_id
+            )
+
+            # NO LOGOS HERE
+            field_data = fixture_field_data(
+                fixture,
+                include_logos=False
             )
 
             update_webflow_item(
@@ -783,11 +856,21 @@ def sync_fixtures():
 
             updated += 1
 
+        # ====================================================
+        # NEW FIXTURE
+        # ====================================================
+
         else:
 
             print(
                 "Creating fixture",
                 fixture_id
+            )
+
+            # Logos are added ONLY for new fixtures
+            field_data = fixture_field_data(
+                fixture,
+                include_logos=True
             )
 
             create_webflow_item(
@@ -801,6 +884,7 @@ def sync_fixtures():
     # --------------------------------------------------------
 
     print()
+
     print(
         "========================================"
     )
