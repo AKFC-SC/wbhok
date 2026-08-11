@@ -284,12 +284,10 @@ def away_score(fixture, away):
 # SPORTS MONKS FIXTURES
 # ============================================================
 
+
 def sm_fixtures():
 
     today = datetime.now(timezone.utc).date()
-
-    # SportsMonks maximum date range is 100 days.
-    # Use 90 days to stay safely below the limit.
     end = today + timedelta(days=90)
 
     url = (
@@ -307,7 +305,6 @@ def sm_fixtures():
             "scores;"
             "state"
         ),
-        "filter": f"participantIds:{TEAM_ID}",
         "per_page": 100,
     }
 
@@ -319,7 +316,6 @@ def sm_fixtures():
     )
 
     print("SPORTSMONKS STATUS:", response.status_code)
-    print("SPORTSMONKS URL:", response.url)
 
     if not response.ok:
         print("SPORTSMONKS RESPONSE:", response.text)
@@ -327,9 +323,35 @@ def sm_fixtures():
 
     data = response.json()
 
-    fixtures = data.get("data") or []
+    all_fixtures = data.get("data") or []
 
-    print("Fixtures received:", len(fixtures))
+    # ========================================================
+    # FILTER: AL KHOLOOD ONLY
+    # ========================================================
+
+    fixtures = []
+
+    for fixture in all_fixtures:
+
+        participants = fixture.get("participants") or []
+
+        participant_ids = [
+            participant.get("id")
+            for participant in participants
+        ]
+
+        if TEAM_ID in participant_ids:
+            fixtures.append(fixture)
+
+    print(
+        "Fixtures received from SportsMonks:",
+        len(all_fixtures)
+    )
+
+    print(
+        "Al Kholood fixtures:",
+        len(fixtures)
+    )
 
     return fixtures
 
