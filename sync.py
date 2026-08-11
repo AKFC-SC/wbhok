@@ -1,20 +1,15 @@
 import os
-import re
-import requests
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 
 # ============================================================
-# ENVIRONMENT
+# CONFIG
 # ============================================================
 
 SM_TOKEN = os.environ["SPORTSMONKS_API_TOKEN"]
 WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
-
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
 
 TEAM_ID = 232744
 
@@ -30,7 +25,6 @@ WF_BASE = "https://api.webflow.com/v2"
 
 def sm_headers():
     return {
-        "Authorization": SM_TOKEN,
         "Accept": "application/json",
     }
 
@@ -44,137 +38,150 @@ def wf_headers():
 
 
 # ============================================================
-# HELPERS
+# SAFE HELPERS
 # ============================================================
 
 def safe_text(value):
     if value is None:
         return ""
-
-    return str(value).strip()
-
-
-def slugify(value):
-    value = safe_text(value).lower()
-
-    value = re.sub(r"[^a-z0-9]+", "-", value)
-    value = re.sub(r"-+", "-", value)
-    value = value.strip("-")
-
-    return value or "fixture"
+    return str(value)
 
 
-def team_name(team):
-    if not team:
+def fixture_slug(fixture):
+    fixture_id = fixture.get("id", "")
+    return f"fixture-{fixture_id}"
+
+
+def fixture_name(fixture):
+    participants = fixture.get("participants") or []
+
+    home = ""
+    away = ""
+
+    for participant in participants:
+        meta = participant.get("meta") or {}
+        location = meta.get("location")
+
+        name = (
+            participant.get("name")
+            or participant.get("short_code")
+            or ""
+        )
+
+        if location == "home":
+            home = name
+
+        elif location == "away":
+            away = name
+
+    if not home:
+        home = "Home"
+
+    if not away:
+        away = "Away"
+
+    return f"{home} vs {away}"
+
+
+def get_participants(fixture):
+    participants = fixture.get("participants") or []
+
+    home = None
+    away = None
+
+    for participant in participants:
+        meta = participant.get("meta") or {}
+        location = meta.get("location")
+
+        if location == "home":
+            home = participant
+
+        elif location == "away":
+            away = participant
+
+    return home, away
+
+
+def participant_name(participant):
+    if not participant:
         return ""
 
     return safe_text(
-        team.get("name")
-        or team.get("short_code")
-        or team.get("short_name")
+        participant.get("name")
+        or participant.get("short_code")
         or ""
     )
 
 
-def team_logo(team):
-    if not team:
+def team_id(participant):
+    if not participant:
         return None
 
-    image_url = (
-        team.get("image_path")
-        or team.get("logo")
-        or team.get("image")
-        or ""
-    )
+    return participant.get("id")
 
-    if not image_url:
+
+# ============================================================
+# TEAM LOGO
+# ============================================================
+
+def team_logo(participant):
+    if not participant:
         return None
+
+    image_path = participant.get("image_path")
+
+    if image_path:
+        return {
+            "url": image_path,
+            "alt": participant_name(participant),
+        }
+
+    participant_id = participant.get("id")
+
+    if not participant_id:
+        return None
+
+    # SportsMonks CDN fallback
+    folder = int(participant_id) // 100000
 
     return {
-        "url": image_url,
-        "alt": team_name(team),
+        "url": (
+            f"https://cdn.sportmonks.com/images/soccer/teams/"
+            f"{folder}/{participant_id}.png"
+        ),
+        "alt": participant_name(participant),
     }
 
 
 # ============================================================
-# SPORTSMONKS
+# TOURNAMENT / LEAGUE LOGO
 # ============================================================
 
-def sm_fixtures():
-    start = datetime.now(timezone.utc).date()
-    end = start + timedelta(days=90)
+def league_logo(fixture):
+    league = fixture.get("league") or {}
 
-    url = (
-        f"{SM_BASE}/fixtures/between/"
-        f"{start}/{end}"
-    )
+    image_path = league.get("image_path")
 
-    params = {
-        "api_token": SM_TOKEN,
-        "include": "participants;venue;league",
-        "per_page": 100,
+    if image_path:
+        return {
+            "url": image_path,
+            "alt": safe_text(league.get("name")),
+        }
+
+    league_id = league.get("id")
+
+    if not league_id:
+        return None
+
+    folder = int(league_id) // 100
+
+    return {
+        "url": (
+            f"https://cdn.sportmonks.com/images/soccer/leagues/"
+            f"{folder}/{league_id}.png"
+        ),
+        "alt": safe_text(league.get("name")),
     }
-
-    response = requests.get(
-        url,
-        headers=sm_headers(),
-        params=params,
-        timeout=30,
-    )
-
-    print("SPORTSMONKS STATUS:", response.status_code)
-
-    if not response.ok:
-        print("SPORTSMONKS RESPONSE:", response.text)
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    fixtures = data.get("data", [])
-
-    result = []
-
-    for fixture in fixtures:
-
-        participants = fixture.get("participants") or []
-
-        home_team = None
-        away_team = None
-
-        for participant in participants:
-
-            meta = participant.get("meta") or {}
-
-            location = meta.get("location")
-
-            if location == "home":
-                home_team = participant
-
-            elif location == "away":
-                away_team = participant
-
-        # Make sure our team is involved
-        participant_ids = []
-
-        for participant in participants:
-            participant_id = participant.get("id")
-
-            if participant_id:
-                participant_ids.append(participant_id)
-
-        if TEAM_ID not in participant_ids:
-            continue
-
-        result.append({
-            "raw": fixture,
-            "home": home_team,
-            "away": away_team,
-        })
-
-    print("Fixtures received:", len(result))
-
-    return result
 
 
 # ============================================================
@@ -187,64 +194,144 @@ def fixture_date(fixture):
     if not value:
         return ""
 
-    value = str(value).strip()
-
-    # SportsMonks normally returns ISO 8601.
-    # Convert it to a Webflow-compatible ISO 8601 value.
+    # SportsMonks normally returns:
+    # 2026-08-15T18:00:00.000000Z
+    #
+    # Webflow accepts ISO 8601 DateTime.
     try:
-
-        parsed = datetime.fromisoformat(
+        dt = datetime.fromisoformat(
             value.replace("Z", "+00:00")
         )
 
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(
-                tzinfo=timezone.utc
-            )
-
-        parsed = parsed.astimezone(timezone.utc)
-
-        return parsed.isoformat(
-            timespec="seconds"
+        return dt.astimezone(timezone.utc).isoformat(
+            timespec="milliseconds"
         ).replace("+00:00", "Z")
 
-    except ValueError:
-
-        # If parsing fails, return original value
+    except Exception:
         return value
 
 
 # ============================================================
-# FIXTURE NAME
+# SCORES
 # ============================================================
 
-def fixture_name(fixture):
-    home = fixture.get("home") or {}
-    away = fixture.get("away") or {}
+def get_score(fixture, participant_id):
+    """
+    Get CURRENT score for a participant.
 
-    home_name = team_name(home)
-    away_name = team_name(away)
+    SportsMonks scores are normally returned like:
 
-    if home_name and away_name:
-        return f"{home_name} vs {away_name}"
+    {
+        "participant_id": 123,
+        "score": {
+            "goals": 2,
+            "participant": "home"
+        },
+        "description": "CURRENT"
+    }
+    """
 
-    if home_name:
-        return home_name
+    if not participant_id:
+        return ""
 
-    if away_name:
-        return away_name
+    scores = fixture.get("scores") or []
 
-    fixture_id = fixture.get("raw", {}).get("id")
+    # Sometimes scores can be returned as a list
+    if isinstance(scores, dict):
+        scores = scores.get("data") or []
 
-    return f"Fixture {fixture_id}"
+    for score in scores:
+
+        if score.get("participant_id") != participant_id:
+            continue
+
+        description = score.get("description")
+
+        if description != "CURRENT":
+            continue
+
+        score_object = score.get("score") or {}
+
+        goals = score_object.get("goals")
+
+        if goals is not None:
+            return safe_text(goals)
+
+        # Fallback in case API returns goals directly
+        goals = score.get("goals")
+
+        if goals is not None:
+            return safe_text(goals)
+
+    return ""
 
 
-def fixture_slug(fixture):
-    raw = fixture.get("raw") or {}
+def home_score(fixture, home):
+    return get_score(
+        fixture,
+        team_id(home)
+    )
 
-    fixture_id = raw.get("id")
 
-    return f"fixture-{fixture_id}"
+def away_score(fixture, away):
+    return get_score(
+        fixture,
+        team_id(away)
+    )
+
+
+# ============================================================
+# SPORTS MONKS FIXTURES
+# ============================================================
+
+def sm_fixtures():
+
+    today = datetime.now(timezone.utc).date()
+
+    # SportsMonks maximum date range is 100 days.
+    # Use 90 days to stay safely below the limit.
+    end = today + timedelta(days=90)
+
+    url = (
+        f"{SM_BASE}/fixtures/between/"
+        f"{today.isoformat()}/"
+        f"{end.isoformat()}"
+    )
+
+    params = {
+        "api_token": SM_TOKEN,
+        "include": (
+            "participants;"
+            "venue;"
+            "league;"
+            "scores;"
+            "state"
+        ),
+        "filter": f"participantIds:{TEAM_ID}",
+        "per_page": 100,
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        headers=sm_headers(),
+        timeout=30,
+    )
+
+    print("SPORTSMONKS STATUS:", response.status_code)
+    print("SPORTSMONKS URL:", response.url)
+
+    if not response.ok:
+        print("SPORTSMONKS RESPONSE:", response.text)
+        response.raise_for_status()
+
+    data = response.json()
+
+    fixtures = data.get("data") or []
+
+    print("Fixtures received:", len(fixtures))
+
+    return fixtures
 
 
 # ============================================================
@@ -273,190 +360,26 @@ def get_collection():
 
 
 # ============================================================
-# WEBFLOW SCHEMA
+# SHOW WEBFLOW FIELDS
 # ============================================================
 
-def get_webflow_field_slugs():
-
-    collection = get_collection()
-
-    fields = collection.get("fields", [])
-
-    slugs = set()
+def print_webflow_fields(collection):
 
     print("\nWebflow fields:")
 
-    for field in fields:
-
-        slug = field.get("slug")
-
-        display_name = field.get("displayName")
-
-        field_type = field.get("type")
+    for field in collection.get("fields", []):
 
         print(
-            f"  {slug} | "
-            f"{display_name} | "
-            f"{field_type}"
+            f'{field.get("slug")} | '
+            f'{field.get("displayName")} | '
+            f'{field.get("type")}'
         )
-
-        if slug:
-            slugs.add(slug)
 
     print()
 
-    return slugs
-
 
 # ============================================================
-# VALIDATE SCHEMA
-# ============================================================
-
-def validate_required_fields(field_slugs):
-
-    required = {
-        "name",
-        "slug",
-        "home-team-name",
-        "away-team-name",
-        "opposing-team-logo",
-        "away-team-logo",
-        "date-time",
-    }
-
-    missing = required - field_slugs
-
-    if missing:
-
-        raise RuntimeError(
-            "Missing Webflow fields: "
-            + ", ".join(sorted(missing))
-        )
-
-
-# ============================================================
-# FIXTURE -> WEBFLOW
-# ============================================================
-
-def fixture_field_data(item):
-
-    fixture = item["raw"]
-
-    home = item.get("home") or {}
-    away = item.get("away") or {}
-
-    home_name = team_name(home)
-    away_name = team_name(away)
-
-    fixture_id = fixture.get("id")
-
-    league = fixture.get("league") or {}
-    venue = fixture.get("venue") or {}
-
-    league_name = safe_text(
-        league.get("name")
-    )
-
-    venue_name = safe_text(
-        venue.get("name")
-    )
-
-    # --------------------------------------------------------
-    # REQUIRED BASIC FIELDS
-    # --------------------------------------------------------
-
-    field_data = {
-        "name": fixture_name(item),
-
-        "slug": fixture_slug(item),
-
-        "home-team-name": home_name,
-
-        "away-team-name": away_name,
-
-        "date-time": fixture_date(fixture),
-
-        "venue": venue_name,
-
-        "league": league_name,
-
-        "sportsmonks-id": safe_text(
-            fixture_id
-        ),
-
-        "status": safe_text(
-            (fixture.get("state") or {}).get("name")
-        ),
-
-        "home-team-score": "",
-
-        "away-team-score": "",
-    }
-
-    # --------------------------------------------------------
-    # HOME LOGO
-    # --------------------------------------------------------
-
-    home_logo = team_logo(home)
-
-    if home_logo:
-        field_data[
-            "opposing-team-logo"
-        ] = home_logo
-
-    # --------------------------------------------------------
-    # AWAY LOGO
-    # --------------------------------------------------------
-
-    away_logo = team_logo(away)
-
-    if away_logo:
-        field_data[
-            "away-team-logo"
-        ] = away_logo
-
-    # --------------------------------------------------------
-    # TOURNAMENT LOGO
-    # --------------------------------------------------------
-
-    if league:
-
-        league_image = (
-            league.get("image_path")
-            or league.get("logo")
-            or ""
-        )
-
-        if league_image:
-
-            field_data[
-                "tournament-logo"
-            ] = {
-                "url": league_image,
-                "alt": league_name,
-            }
-
-    # --------------------------------------------------------
-    # REMOVE EMPTY OPTIONAL VALUES
-    # --------------------------------------------------------
-
-    cleaned = {}
-
-    for key, value in field_data.items():
-
-        if value is None:
-            continue
-
-        if value == "":
-            continue
-
-        cleaned[key] = value
-
-    return cleaned
-
-
-# ============================================================
-# WEBFLOW ITEMS
+# GET WEBFLOW ITEMS
 # ============================================================
 
 def wf_items():
@@ -466,58 +389,110 @@ def wf_items():
         f"{COLLECTION_ID}/items"
     )
 
-    all_items = []
+    params = {
+        "limit": 100,
+    }
 
-    offset = 0
-
-    while True:
-
-        params = {
-            "offset": offset,
-            "limit": 100,
-        }
-
-        response = requests.get(
-            url,
-            headers=wf_headers(),
-            params=params,
-            timeout=30,
-        )
-
-        print(
-            "ITEMS STATUS:",
-            response.status_code
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        items = data.get("items", [])
-
-        all_items.extend(items)
-
-        pagination = data.get(
-            "pagination",
-            {}
-        )
-
-        total = pagination.get(
-            "total",
-            len(all_items)
-        )
-
-        if len(all_items) >= total:
-            break
-
-        offset += 100
-
-    print(
-        "Existing Webflow items:",
-        len(all_items)
+    response = requests.get(
+        url,
+        headers=wf_headers(),
+        params=params,
+        timeout=30,
     )
 
-    return all_items
+    print("ITEMS STATUS:", response.status_code)
+
+    if not response.ok:
+        print("ITEMS RESPONSE:", response.text)
+        response.raise_for_status()
+
+    data = response.json()
+
+    items = data.get("items") or []
+
+    print("Existing Webflow items:", len(items))
+
+    return items
+
+
+# ============================================================
+# CREATE FIELD DATA
+# ============================================================
+
+def fixture_field_data(fixture):
+
+    home, away = get_participants(fixture)
+
+    home_name = participant_name(home)
+    away_name = participant_name(away)
+
+    fixture_id = fixture.get("id", "")
+
+    venue = fixture.get("venue") or {}
+    venue_name = venue.get("name", "")
+
+    league = fixture.get("league") or {}
+    league_name = league.get("name", "")
+
+    state = fixture.get("state") or {}
+    state_name = state.get("name", "")
+
+    home_logo = team_logo(home)
+    away_logo = team_logo(away)
+    tournament_logo = league_logo(fixture)
+
+    field_data = {
+        "name": fixture_name(fixture),
+
+        "slug": fixture_slug(fixture),
+
+        "home-team-name": home_name,
+
+        "away-team-name": away_name,
+
+        "date-time": fixture_date(fixture),
+
+        "venue": safe_text(venue_name),
+
+        "league": safe_text(league_name),
+
+        "sportsmonks-id": safe_text(fixture_id),
+
+        "status": safe_text(state_name),
+
+        "home-team-score": home_score(
+            fixture,
+            home
+        ),
+
+        "away-team-score": away_score(
+            fixture,
+            away
+        ),
+    }
+
+    # --------------------------------------------------------
+    # HOME LOGO
+    # --------------------------------------------------------
+
+    if home_logo:
+        field_data["opposing-team-logo"] = home_logo
+
+    # --------------------------------------------------------
+    # AWAY LOGO
+    # --------------------------------------------------------
+
+    if away_logo:
+        field_data["away-team-logo"] = away_logo
+
+    # --------------------------------------------------------
+    # TOURNAMENT LOGO
+    # --------------------------------------------------------
+
+    if tournament_logo:
+        field_data["tournament-logo"] = tournament_logo
+
+    return field_data
 
 
 # ============================================================
@@ -532,13 +507,8 @@ def create_webflow_item(field_data):
     )
 
     payload = {
-        "isArchived": False,
-        "isDraft": False,
-        "fieldData": field_data,
+        "fieldData": field_data
     }
-
-    print("\nCREATE PAYLOAD:")
-    print(payload)
 
     response = requests.post(
         url,
@@ -547,20 +517,15 @@ def create_webflow_item(field_data):
         timeout=30,
     )
 
-    print(
-        "CREATE STATUS:",
-        response.status_code
-    )
-
-    print(
-        "CREATE RESPONSE:",
-        response.text
-    )
-
     if not response.ok:
+
+        print("CREATE STATUS:", response.status_code)
+        print("CREATE RESPONSE:", response.text)
+        print("CREATE PAYLOAD:", field_data)
+
         response.raise_for_status()
 
-    return response.json()
+    print("Created:", field_data.get("sportsmonks-id"))
 
 
 # ============================================================
@@ -576,13 +541,8 @@ def update_webflow_item(item_id, field_data):
     )
 
     payload = {
-        "isArchived": False,
-        "isDraft": False,
-        "fieldData": field_data,
+        "fieldData": field_data
     }
-
-    print("\nUPDATE PAYLOAD:")
-    print(payload)
 
     response = requests.patch(
         url,
@@ -591,67 +551,31 @@ def update_webflow_item(item_id, field_data):
         timeout=30,
     )
 
-    print(
-        "UPDATE STATUS:",
-        response.status_code
-    )
-
-    print(
-        "UPDATE RESPONSE:",
-        response.text
-    )
+    print("UPDATE STATUS:", response.status_code)
 
     if not response.ok:
+
+        print("UPDATE RESPONSE:", response.text)
+        print("UPDATE PAYLOAD:", field_data)
+
         response.raise_for_status()
 
-    return response.json()
+    print("Updated:", field_data.get("sportsmonks-id"))
 
 
 # ============================================================
-# FIND EXISTING ITEM
-# ============================================================
-
-def build_existing_index(existing_items):
-
-    index = {}
-
-    for item in existing_items:
-
-        field_data = (
-            item.get("fieldData")
-            or {}
-        )
-
-        fixture_id = field_data.get(
-            "sportsmonks-id"
-        )
-
-        if fixture_id:
-
-            index[
-                str(fixture_id)
-            ] = item
-
-    return index
-
-
-# ============================================================
-# SYNC
+# SYNC FIXTURES
 # ============================================================
 
 def sync_fixtures():
 
     # --------------------------------------------------------
-    # Check Webflow schema first
+    # Test collection first
     # --------------------------------------------------------
 
-    field_slugs = (
-        get_webflow_field_slugs()
-    )
+    collection = get_collection()
 
-    validate_required_fields(
-        field_slugs
-    )
+    print_webflow_fields(collection)
 
     # --------------------------------------------------------
     # Get SportsMonks fixtures
@@ -665,81 +589,81 @@ def sync_fixtures():
 
     existing_items = wf_items()
 
-    existing_by_fixture_id = (
-        build_existing_index(
-            existing_items
+    existing_by_fixture_id = {}
+
+    for item in existing_items:
+
+        field_data = item.get("fieldData") or {}
+
+        fixture_id = (
+            field_data.get("sportsmonks-id")
+            or field_data.get("fixture-id")
         )
-    )
+
+        if fixture_id:
+            existing_by_fixture_id[
+                safe_text(fixture_id)
+            ] = item
 
     created = 0
     updated = 0
 
     # --------------------------------------------------------
-    # Sync
+    # Process fixtures
     # --------------------------------------------------------
 
-    for item in fixtures:
+    for fixture in fixtures:
 
-        fixture = item["raw"]
+        fixture_id = safe_text(
+            fixture.get("id")
+        )
 
-        fixture_id = fixture.get("id")
+        if not fixture_id:
+            continue
 
-        fixture_id_string = str(
+        print(
+            "\nProcessing fixture:",
             fixture_id
         )
 
         field_data = fixture_field_data(
-            item
+            fixture
         )
 
-        existing = (
-            existing_by_fixture_id.get(
-                fixture_id_string
-            )
+        existing = existing_by_fixture_id.get(
+            fixture_id
         )
 
-        try:
-
-            if existing:
-
-                print(
-                    "\nUpdating fixture",
-                    fixture_id
-                )
-
-                update_webflow_item(
-                    existing["id"],
-                    field_data
-                )
-
-                updated += 1
-
-            else:
-
-                print(
-                    "\nCreating fixture",
-                    fixture_id
-                )
-
-                create_webflow_item(
-                    field_data
-                )
-
-                created += 1
-
-        except Exception as error:
+        if existing:
 
             print(
-                "\nFAILED fixture",
+                "Updating fixture",
                 fixture_id
             )
 
-            print(
-                "Error:",
-                error
+            update_webflow_item(
+                existing["id"],
+                field_data
             )
 
-            raise
+            updated += 1
+
+        else:
+
+            print(
+                "Creating fixture",
+                fixture_id
+            )
+
+            create_webflow_item(
+                field_data
+            )
+
+            created += 1
+
+    # --------------------------------------------------------
+    # Summary
+    # --------------------------------------------------------
 
     print()
     print(
@@ -756,42 +680,10 @@ def sync_fixtures():
 
 
 # ============================================================
-# TEST WEBFLOW COLLECTION
-# ============================================================
-
-def test_collection():
-
-    url = (
-        f"{WF_BASE}/collections/"
-        f"{COLLECTION_ID}"
-    )
-
-    response = requests.get(
-        url,
-        headers=wf_headers(),
-        timeout=30,
-    )
-
-    print(
-        "COLLECTION TEST STATUS:",
-        response.status_code
-    )
-
-    print(
-        "COLLECTION TEST RESPONSE:",
-        response.text
-    )
-
-    response.raise_for_status()
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
 def main():
-
-    test_collection()
 
     sync_fixtures()
 
