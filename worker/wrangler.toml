@@ -1,0 +1,14 @@
+name = "akfc-match-hub-api"
+main = "src/index.js"
+compatibility_date = "2026-08-26"
+
+# Non-secret config. Update to your real Webflow domain before going live —
+# currently set to the site's default Webflow subdomain since no custom domain
+# was configured at the time this was written. "*" (open CORS) is NOT used here
+# on purpose; if this var is unset the Worker falls back to "*" — set it explicitly.
+[vars]
+MATCH_HUB_ALLOWED_ORIGIN = "https://alkholoodfc-e81624a4c4f1acbc5e1963552f0.webflow.io"
+
+# SPORTSMONKS_API_TOKEN is a SECRET, not a var — never put it here or in any
+# committed file. Set it via the Cloudflare dashboard or:
+#   wrangler secret put SPORTSMONKS_API_TOKEN
