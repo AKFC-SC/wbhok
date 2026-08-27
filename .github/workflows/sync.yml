@@ -16,9 +16,15 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -r requirements.txt
-          
+
       - name: Sync Fixtures
         env:
           SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
           WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKENS }}
-        run: python sync.py 
+        run: python sync.py
+
+      - name: Sync U21 Fixtures
+        env:
+          SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
+          WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKENS }}
+        run: python sync_u21.py
