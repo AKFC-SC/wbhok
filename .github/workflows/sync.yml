@@ -28,3 +28,9 @@ jobs:
           SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
           WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKENS }}
         run: python sync_u21.py
+
+      - name: Sync U21 Players
+        env:
+          SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
+          WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKENS }}
+        run: python sync_u21_players.py

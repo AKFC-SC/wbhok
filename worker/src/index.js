@@ -1,7 +1,9 @@
 // Match Hub API — Cloudflare Worker
 //
 // GET /api/match/{sportmonksId}
-// GET /api/standings
+// GET /api/standings              — First Team (Saudi Pro League), unchanged behavior
+// GET /api/standings?league_id=N  — any other competition (e.g. U21 Elite League, 3569);
+//                                    current season is resolved from SportMonks, never hardcoded
 //
 // Calls SportMonks server-side (token read from a Worker Secret, never sent to the
 // browser) and returns shaped JSON for the Webflow frontend. mapper.js is verified
@@ -66,8 +68,38 @@ async function handleMatch(sportmonksId, env, headers){
   return new Response(JSON.stringify(shaped), { status: 200, headers });
 }
 
-async function handleStandings(env, headers){
-  const seasonId = env.STANDINGS_SEASON_ID || DEFAULT_STANDINGS_SEASON_ID;
+// Resolves the current season id for an arbitrary league, so a non-First-Team
+// competition (e.g. U21) never has to assume or hardcode a season — it always
+// asks SportMonks what "current" means for that specific league right now.
+async function resolveCurrentSeasonId(leagueId, env){
+  const smUrl = `https://api.sportmonks.com/v3/football/leagues/${leagueId}`
+    + `?api_token=${env.SPORTSMONKS_API_TOKEN}&include=currentseason`;
+
+  let smRes;
+  try {
+    smRes = await fetch(smUrl);
+  } catch (err) {
+    return null;
+  }
+  if(!smRes.ok) return null;
+
+  const json = await smRes.json();
+  const seasonId = json && json.data && json.data.currentseason && json.data.currentseason.id;
+  return seasonId ? String(seasonId) : null;
+}
+
+async function handleStandings(env, headers, leagueId){
+  let seasonId;
+
+  if(leagueId){
+    seasonId = await resolveCurrentSeasonId(leagueId, env);
+    if(!seasonId){
+      return new Response(JSON.stringify({ error: 'Could not resolve current season for league', leagueId }), { status: 502, headers });
+    }
+  } else {
+    // Unchanged First Team behavior — same default/env-var season id as before.
+    seasonId = env.STANDINGS_SEASON_ID || DEFAULT_STANDINGS_SEASON_ID;
+  }
 
   const smUrl = `https://api.sportmonks.com/v3/football/standings/seasons/${seasonId}`
     + `?api_token=${env.SPORTSMONKS_API_TOKEN}&include=${encodeURIComponent(STANDINGS_INCLUDE)}`;
@@ -118,7 +150,11 @@ export default {
     }
 
     if(url.pathname.replace(/\/$/, '') === '/api/standings'){
-      return handleStandings(env, headers);
+      const leagueId = url.searchParams.get('league_id');
+      if(leagueId && !/^\d+$/.test(leagueId)){
+        return new Response(JSON.stringify({ error: 'Invalid league_id' }), { status: 400, headers });
+      }
+      return handleStandings(env, headers, leagueId);
     }
 
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers });
