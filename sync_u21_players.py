@@ -161,6 +161,7 @@ def create_webflow_item(field_data):
         print("CREATE PAYLOAD:", field_data)
         response.raise_for_status()
     print("Created U21 player:", field_data.get("slug"))
+    return response.json().get("id")
 
 
 def update_webflow_item(item_id, field_data):
@@ -173,6 +174,26 @@ def update_webflow_item(item_id, field_data):
         print("UPDATE PAYLOAD:", field_data)
         response.raise_for_status()
     print("Updated U21 player:", field_data.get("slug"))
+
+
+def publish_webflow_items(item_ids):
+    # Webflow items created/updated via the API land as Draft — this makes them
+    # live so they actually render on the published site without a manual step.
+    # Batched at 100 per request (Webflow's own limit); our squad is far smaller.
+    if not item_ids:
+        return
+    url = f"{WF_BASE}/collections/{PLAYERS_COLLECTION_ID}/items/publish"
+    for i in range(0, len(item_ids), 100):
+        batch = item_ids[i:i + 100]
+        response = requests.post(url, headers=wf_headers(), json={"itemIds": batch}, timeout=30)
+        print("PUBLISH STATUS:", response.status_code)
+        if not response.ok:
+            print("PUBLISH RESPONSE:", response.text)
+            # Non-fatal: the sync itself succeeded, only the publish step failed
+            # (e.g. site plan doesn't support it). Don't fail the whole run over it.
+            print("Publish failed for batch — items remain in Draft; publish manually if needed.")
+        else:
+            print("Published U21 player items:", len(batch))
 
 
 # ============================================================
@@ -191,6 +212,7 @@ def sync_u21_players():
     created = 0
     updated = 0
     skipped = 0
+    touched_item_ids = []
 
     for entry in squad:
         field_data, player_id = squad_entry_field_data(entry)
@@ -210,10 +232,15 @@ def sync_u21_players():
             if "player-image" not in update_payload:
                 update_payload.pop("player-image", None)
             update_webflow_item(existing["id"], update_payload)
+            touched_item_ids.append(existing["id"])
             updated += 1
         else:
-            create_webflow_item(field_data)
+            new_id = create_webflow_item(field_data)
+            if new_id:
+                touched_item_ids.append(new_id)
             created += 1
+
+    publish_webflow_items(touched_item_ids)
 
     print()
     print("========================================")
@@ -221,6 +248,7 @@ def sync_u21_players():
     print(f"U21 Webflow player items created: {created}")
     print(f"U21 Webflow player items updated: {updated}")
     print(f"Skipped (no player_id): {skipped}")
+    print(f"Items published: {len(touched_item_ids)}")
     print("========================================")
 
 
