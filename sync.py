@@ -16,6 +16,13 @@ TEAM_ID = 232744
 
 COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
+# How many days before "today" the SportMonks fixture query also covers, so a
+# match that finished right before UTC midnight can still receive a late
+# status/score correction on the next run(s) instead of falling out of range
+# forever. Kept small on purpose — this is a correction window, not a
+# historical backfill.
+LOOKBACK_DAYS = 2
+
 SM_BASE = "https://api.sportmonks.com/v3/football"
 WF_BASE = "https://api.webflow.com/v2"
 
@@ -273,7 +280,7 @@ def sm_fixtures():
 
     all_fixtures = []
 
-    current_start = today
+    current_start = today - timedelta(days=LOOKBACK_DAYS)
 
     # SportsMonks maximum range is 100 days
     while current_start <= season_end:
@@ -692,6 +699,8 @@ def create_webflow_item(field_data):
         )
     )
 
+    return response.json().get("id")
+
 
 # ============================================================
 # UPDATE WEBFLOW ITEM
@@ -752,6 +761,61 @@ def update_webflow_item(
 
 
 # ============================================================
+# PUBLISH WEBFLOW ITEMS
+# ============================================================
+
+def publish_webflow_items(item_ids):
+
+    # Items created/updated via the API above land as staged changes —
+    # this call is what actually makes them live on alkholoodclub.com /
+    # www.alkholoodclub.com. Batched at 100 per request (Webflow's own
+    # limit on this endpoint).
+    #
+    # Unlike sync_u21_players.py's publish step, a failure here is FATAL
+    # (raise_for_status is allowed to propagate): if the CMS write
+    # succeeded but the publish fails, the live site would silently keep
+    # serving stale data, so the run must fail loudly instead of masking it.
+
+    if not item_ids:
+        return
+
+    url = (
+        f"{WF_BASE}/collections/"
+        f"{COLLECTION_ID}/items/publish"
+    )
+
+    for i in range(0, len(item_ids), 100):
+
+        batch = item_ids[i:i + 100]
+
+        response = requests.post(
+            url,
+            headers=wf_headers(),
+            json={"itemIds": batch},
+            timeout=30,
+        )
+
+        print(
+            "PUBLISH STATUS:",
+            response.status_code
+        )
+
+        if not response.ok:
+
+            print(
+                "PUBLISH RESPONSE:",
+                response.text
+            )
+
+            response.raise_for_status()
+
+        print(
+            "Published Webflow items:",
+            len(batch)
+        )
+
+
+# ============================================================
 # SYNC
 # ============================================================
 
@@ -806,6 +870,11 @@ def sync_fixtures():
 
     created = 0
     updated = 0
+    skipped = 0
+    failed = 0
+
+    changes_made = False
+    touched_item_ids = []
 
     # --------------------------------------------------------
     # Process fixtures
@@ -818,6 +887,7 @@ def sync_fixtures():
         )
 
         if not fixture_id:
+            skipped += 1
             continue
 
         print()
@@ -854,7 +924,12 @@ def sync_fixtures():
                 field_data
             )
 
+            touched_item_ids.append(
+                existing["id"]
+            )
+
             updated += 1
+            changes_made = True
 
         # ====================================================
         # NEW FIXTURE
@@ -873,11 +948,17 @@ def sync_fixtures():
                 include_logos=True
             )
 
-            create_webflow_item(
+            new_item_id = create_webflow_item(
                 field_data
             )
 
+            if new_item_id:
+                touched_item_ids.append(
+                    new_item_id
+                )
+
             created += 1
+            changes_made = True
 
     # --------------------------------------------------------
     # Summary
@@ -902,8 +983,46 @@ def sync_fixtures():
     )
 
     print(
+        f"Skipped (no fixture id): {skipped}"
+    )
+
+    # NOTE: "failed" stays 0 by design in this file's current error-handling
+    # style — every Webflow/SportMonks call above uses raise_for_status()
+    # uncaught, so a real create/update failure stops the run immediately
+    # (non-zero exit) rather than being counted and continuing to the next
+    # fixture. The counter is kept here for a clear, consistent summary
+    # line and so it's available if that behavior is ever intentionally
+    # changed later — it is not a sign this run continued past a failure.
+    print(
+        f"Failed: {failed}"
+    )
+
+    print(
         "========================================"
     )
+
+    # --------------------------------------------------------
+    # Publish
+    #
+    # Only publish when at least one item was actually created or
+    # updated this run. No changes -> no publish call at all.
+    # --------------------------------------------------------
+
+    print()
+
+    if changes_made:
+
+        print("Changes detected: Yes")
+        print("Publishing changes...")
+
+        publish_webflow_items(touched_item_ids)
+
+        print("Publish successful.")
+
+    else:
+
+        print("Changes detected: No")
+        print("Publish skipped.")
 
 
 # ============================================================
