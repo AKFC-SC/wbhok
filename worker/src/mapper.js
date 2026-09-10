@@ -75,6 +75,35 @@ const STAT_TYPE_IDS = {
 // placeholder image.
 const SPORTMONKS_PLACEHOLDER_PHOTO = 'https://cdn.sportmonks.com/images/soccer/placeholder.png';
 
+// Same Riyadh-offset date/time formatting already confirmed and in production use
+// in previewMapper.js (Match Center) — duplicated here rather than imported, to
+// keep this file's existing zero-cross-file-dependency shape unchanged. starting_at
+// is a base SportMonks fixture field, already included in every /api/match/{id}
+// response with no INCLUDE change needed.
+var RIYADH_OFFSET_HOURS = 3;
+
+function formatDate(startingAt){
+  if(!startingAt) return null;
+  var d = new Date(startingAt);
+  if(isNaN(d.getTime())) return null;
+  var riyadh = new Date(d.getTime() + RIYADH_OFFSET_HOURS * 3600 * 1000);
+  var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  return months[riyadh.getUTCMonth()] + ' ' + riyadh.getUTCDate() + ', ' + riyadh.getUTCFullYear();
+}
+
+function formatTime(startingAt){
+  if(!startingAt) return null;
+  var d = new Date(startingAt);
+  if(isNaN(d.getTime())) return null;
+  var riyadh = new Date(d.getTime() + RIYADH_OFFSET_HOURS * 3600 * 1000);
+  var hours = riyadh.getUTCHours();
+  var minutes = riyadh.getUTCMinutes();
+  var ampm = hours >= 12 ? 'PM' : 'AM';
+  var h12 = hours % 12;
+  if(h12 === 0) h12 = 12;
+  return h12 + ':' + (minutes < 10 ? '0' : '') + minutes + ' ' + ampm;
+}
+
 function findParticipant(participants, location){
   return (participants || []).find(function(p){
     return (p.meta || {}).location === location; // 'home' | 'away'
@@ -232,6 +261,8 @@ function mapSportMonksToMatchHub(fixture){
     },
     competition: fixture.league ? fixture.league.name : '',
     venue: fixture.venue ? fixture.venue.name : '',
+    date: formatDate(fixture.starting_at),
+    kickoffTime: formatTime(fixture.starting_at),
     status: fixture.state ? fixture.state.name : null, // e.g. "Full Time", "Not Started"
     possession: statPair(statistics, home, away, STAT_TYPE_IDS.POSSESSION_PCT),
     statistics: {

@@ -13,6 +13,7 @@
 
 import { mapSportMonksToMatchHub } from './mapper.js';
 import { mapStandings } from './standingsMapper.js';
+import { mapFixtureCore, mapH2H, mapLastFive } from './previewMapper.js';
 
 // Confirmed working combined include string (2026-08-26) — see mapper.js header.
 const INCLUDE =
@@ -26,12 +27,28 @@ const STANDINGS_INCLUDE = 'participant;details.type;form';
 // Worker env var so next season's id can be updated without a code redeploy.
 const DEFAULT_STANDINGS_SEASON_ID = '27951';
 
-function corsHeaders(env){
-  return {
-    'Access-Control-Allow-Origin': env.MATCH_HUB_ALLOWED_ORIGIN || '*',
+// Explicit allowlist, never a blindly reflected Origin. MATCH_HUB_ALLOWED_ORIGINS is a
+// comma-separated non-secret var (see wrangler.toml) so origins can be added later
+// without a code change. Access-Control-Allow-Origin is only ever set to the exact
+// requesting origin when it's in this list — otherwise the header is omitted entirely,
+// which is what makes the browser correctly block any origin not on the list. Vary:
+// Origin prevents a cached response for one allowed origin from being served to another.
+function corsHeaders(request, env){
+  const allowedOrigins = (env.MATCH_HUB_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(function(o){ return o.trim(); })
+    .filter(Boolean);
+  const requestOrigin = request.headers.get('Origin');
+
+  const headers = {
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'Vary': 'Origin'
   };
+  if(requestOrigin && allowedOrigins.indexOf(requestOrigin) !== -1){
+    headers['Access-Control-Allow-Origin'] = requestOrigin;
+  }
+  return headers;
 }
 
 async function handleMatch(sportmonksId, env, headers){
@@ -66,6 +83,112 @@ async function handleMatch(sportmonksId, env, headers){
   }
 
   return new Response(JSON.stringify(shaped), { status: 200, headers });
+}
+
+// Pre-match (Match Center) endpoint — GET /api/match/{sportmonksId}/preview.
+// Entirely additive: a new route on the same Worker, same secret, same CORS
+// headers, same fetch-shape-return pattern as handleMatch. Does not change
+// handleMatch or its response shape in any way, so Match Hub's existing
+// /api/match/{id} behavior is unaffected.
+const PREVIEW_INCLUDE = 'participants;venue;league;state;scores';
+const H2H_INCLUDE = 'participants;league;scores;state';
+const LAST5_INCLUDE = 'participants;league;scores;state';
+const LAST5_WINDOW_DAYS = 90; // same chunk size sync.py already uses (confirmed under SportMonks' 100-day /between cap)
+
+async function smGet(path, env){
+  const url = `https://api.sportmonks.com/v3/football${path}`
+    + (path.indexOf('?') === -1 ? '?' : '&') + `api_token=${env.SPORTSMONKS_API_TOKEN}`;
+  const res = await fetch(url);
+  if(!res.ok) return null;
+  const json = await res.json();
+  return json && json.data ? json.data : null;
+}
+
+function isoDate(d){ return d.toISOString().slice(0, 10); }
+
+async function fetchLastFiveForTeam(teamId, excludeFixtureId, env){
+  const today = new Date();
+  const windowStart = new Date(today.getTime() - LAST5_WINDOW_DAYS * 86400000);
+  const path = `/fixtures/between/${isoDate(windowStart)}/${isoDate(today)}/${teamId}`
+    + `?include=${encodeURIComponent(LAST5_INCLUDE)}`;
+  let data;
+  try {
+    data = await smGet(path, env);
+  } catch (err) {
+    return [];
+  }
+  if(!Array.isArray(data)) return [];
+  try {
+    return mapLastFive(data, teamId, excludeFixtureId);
+  } catch (err) {
+    return [];
+  }
+}
+
+async function fetchH2H(homeId, awayId, env){
+  if(!homeId || !awayId) return { summary: { homeWins: 0, draws: 0, awayWins: 0 }, meetings: [] };
+  let data;
+  try {
+    data = await smGet(`/fixtures/head-to-head/${homeId}/${awayId}?include=${encodeURIComponent(H2H_INCLUDE)}`, env);
+  } catch (err) {
+    return { summary: { homeWins: 0, draws: 0, awayWins: 0 }, meetings: [] };
+  }
+  if(!Array.isArray(data)) return { summary: { homeWins: 0, draws: 0, awayWins: 0 }, meetings: [] };
+  try {
+    return mapH2H(data, homeId, awayId);
+  } catch (err) {
+    return { summary: { homeWins: 0, draws: 0, awayWins: 0 }, meetings: [] };
+  }
+}
+
+async function handlePreview(sportmonksId, env, headers){
+  if(!/^\d+$/.test(sportmonksId)){
+    return new Response(JSON.stringify({ error: 'Invalid fixture id' }), { status: 400, headers });
+  }
+
+  const smUrl = `https://api.sportmonks.com/v3/football/fixtures/${sportmonksId}`
+    + `?api_token=${env.SPORTSMONKS_API_TOKEN}&include=${encodeURIComponent(PREVIEW_INCLUDE)}`;
+
+  let smRes;
+  try {
+    smRes = await fetch(smUrl);
+  } catch (err) {
+    return new Response(JSON.stringify({ error: 'SportMonks request failed' }), { status: 502, headers });
+  }
+  if(!smRes.ok){
+    return new Response(JSON.stringify({ error: 'SportMonks request failed', status: smRes.status }), { status: smRes.status, headers });
+  }
+
+  const json = await smRes.json();
+  if(!json || !json.data){
+    return new Response(JSON.stringify({ error: 'Fixture not found' }), { status: 404, headers });
+  }
+
+  let core;
+  try {
+    core = mapFixtureCore(json.data);
+  } catch (err) {
+    return new Response(JSON.stringify({ error: 'Failed to map fixture data' }), { status: 500, headers });
+  }
+
+  const [h2h, homeForm, awayForm] = await Promise.all([
+    fetchH2H(core.home.id, core.away.id, env),
+    core.home.id ? fetchLastFiveForTeam(core.home.id, sportmonksId, env) : [],
+    core.away.id ? fetchLastFiveForTeam(core.away.id, sportmonksId, env) : []
+  ]);
+
+  return new Response(JSON.stringify({
+    home: core.home,
+    away: core.away,
+    competition: core.competition,
+    venue: core.venue,
+    location: core.location,
+    date: core.date,
+    kickoffTime: core.kickoffTime,
+    status: core.status,
+    h2h: h2h,
+    form: { home: homeForm, away: awayForm }
+  }), { status: 200, headers });
 }
 
 // Resolves the current season id for an arbitrary league, so a non-First-Team
@@ -132,7 +255,7 @@ async function handleStandings(env, headers, leagueId){
 
 export default {
   async fetch(request, env){
-    const headers = corsHeaders(env);
+    const headers = corsHeaders(request, env);
 
     if(request.method === 'OPTIONS'){
       return new Response(null, { status: 204, headers });
@@ -143,6 +266,11 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    const previewRoute = url.pathname.match(/^\/api\/match\/([^/]+)\/preview\/?$/);
+    if(previewRoute){
+      return handlePreview(previewRoute[1], env, headers);
+    }
 
     const matchRoute = url.pathname.match(/^\/api\/match\/([^/]+)\/?$/);
     if(matchRoute){

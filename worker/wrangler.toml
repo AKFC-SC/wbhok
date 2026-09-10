@@ -1,13 +1,14 @@
-name = "akfc-match-hub-api"
+name = "wbhok"
 main = "src/index.js"
 compatibility_date = "2026-08-26"
 
-# Non-secret config. Update to your real Webflow domain before going live —
-# currently set to the site's default Webflow subdomain since no custom domain
-# was configured at the time this was written. "*" (open CORS) is NOT used here
-# on purpose; if this var is unset the Worker falls back to "*" — set it explicitly.
+# Non-secret config. Explicit CORS allowlist — comma-separated, exact origins only
+# (never a blindly reflected Origin). Updated 2026-09-09 to add the live custom domain
+# after diagnosing that alkholoodclub.com was blocked by this Worker never allowing
+# anything but the Webflow staging subdomain. If this var is unset, corsHeaders() in
+# index.js omits Access-Control-Allow-Origin entirely (fails closed, not "*").
 [vars]
-MATCH_HUB_ALLOWED_ORIGIN = "https://alkholoodfc-e81624a4c4f1acbc5e1963552f0.webflow.io"
+MATCH_HUB_ALLOWED_ORIGINS = "https://alkholoodclub.com,https://www.alkholoodclub.com,https://alkholoodfc-e81624a4c4f1acbc5e1963552f0.webflow.io"
 
 # SPORTSMONKS_API_TOKEN is a SECRET, not a var — never put it here or in any
 # committed file. Set it via the Cloudflare dashboard or:
