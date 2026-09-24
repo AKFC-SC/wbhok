@@ -1,0 +1,130 @@
+name: SportMonks Fixture Diagnostic (TEMPORARY)
+
+# TEMPORARY, READ-ONLY DIAGNOSTIC WORKFLOW.
+#
+# Purpose: fetch ONE known SportMonks fixture (19777719), once default/
+# English and once with locale=ar, and print only the structured fields
+# needed to compare against Webflow. This workflow does NOT import or
+# call sync.py, does NOT reference WEBFLOW_API_TOKEN anywhere, and makes
+# ZERO requests to the Webflow API. It is manually triggered only — no
+# schedule, no push trigger. Intended to be deleted after use.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch SportMonks fixture 19777719 (default + locale=ar)
+        env:
+          SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+
+          import requests
+
+          FIXTURE_ID = 19777719
+          SM_BASE = "https://api.sportmonks.com/v3/football"
+          INCLUDE = "participants;venue;league;scores;state"
+
+          token = os.environ["SPORTSMONKS_API_TOKEN"]
+
+
+          def fetch(locale=None):
+
+              params = {
+                  "api_token": token,
+                  "include": INCLUDE,
+              }
+
+              if locale:
+                  params["locale"] = locale
+
+              url = f"{SM_BASE}/fixtures/{FIXTURE_ID}"
+
+              response = requests.get(url, params=params, timeout=30)
+              response.raise_for_status()
+
+              data = response.json().get("data") or {}
+
+              participants = data.get("participants") or []
+
+              home = next(
+                  (
+                      p for p in participants
+                      if (p.get("meta") or {}).get("location") == "home"
+                  ),
+                  None,
+              )
+              away = next(
+                  (
+                      p for p in participants
+                      if (p.get("meta") or {}).get("location") == "away"
+                  ),
+                  None,
+              )
+
+              scores = data.get("scores") or []
+
+              def score_for(participant_id):
+                  for s in scores:
+                      if (
+                          s.get("participant_id") == participant_id
+                          and s.get("description") == "CURRENT"
+                      ):
+                          return (s.get("score") or {}).get("goals")
+                  return None
+
+              return {
+                  "locale": locale or "default",
+                  "fixture_id": data.get("id"),
+                  "fixture_name": data.get("name"),
+                  "starting_at": data.get("starting_at"),
+                  "state_name": (data.get("state") or {}).get("name"),
+                  "home_team_id": home.get("id") if home else None,
+                  "home_team_name": home.get("name") if home else None,
+                  "home_score": score_for(home.get("id")) if home else None,
+                  "away_team_id": away.get("id") if away else None,
+                  "away_team_name": away.get("name") if away else None,
+                  "away_score": score_for(away.get("id")) if away else None,
+                  "venue_id": (data.get("venue") or {}).get("id"),
+                  "venue_name": (data.get("venue") or {}).get("name"),
+                  "league_id": (data.get("league") or {}).get("id"),
+                  "league_name": (data.get("league") or {}).get("name"),
+              }
+
+
+          result_en = fetch(locale=None)
+          result_ar = fetch(locale="ar")
+
+          print("::group::SportMonks Fixture Diagnostic Result")
+          print(
+              json.dumps(
+                  {"english": result_en, "arabic": result_ar},
+                  ensure_ascii=False,
+                  indent=2,
+              )
+          )
+          print("::endgroup::")
+          PYEOF
+
+      - name: Confirm scope and safety properties
+        run: |
+          echo "Webflow calls: 0"
+          echo "Webflow writes: 0"
+          echo "Webflow publishes: 0"
+          echo "Production sync invoked: NO"
+          echo "Scope: Fixture 19777719 only"
