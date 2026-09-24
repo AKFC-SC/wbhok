@@ -16,6 +16,21 @@ TEAM_ID = 232744
 
 COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
+# ============================================================
+# ARABIC SYNC CONFIG
+#
+# Everything below is inert while ARABIC_SYNC_ENABLED is False — the
+# Arabic sub-pass is never even called from sync_fixtures() in that case.
+# When enabled, ARABIC_SYNC_DRY_RUN additionally gates every actual
+# Webflow write: dry-run logs the planned change and performs no write.
+# ============================================================
+
+ARABIC_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0d"
+PRIMARY_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0c"
+
+ARABIC_SYNC_ENABLED = False
+ARABIC_SYNC_DRY_RUN = True
+
 # How many days before "today" the SportMonks fixture query also covers, so a
 # match that finished right before UTC midnight can still receive a late
 # status/score correction on the next run(s) instead of falling out of range
@@ -169,6 +184,38 @@ def league_logo(fixture):
 
 
 # ============================================================
+# DATE / TIME PARSING
+#
+# SportMonks always returns starting_at in UTC (see mapper.js /
+# previewMapper.js header comments — this has been the established,
+# verified contract throughout this project). This parser accepts:
+#   - a 'Z'-suffixed ISO timestamp (the normal SportMonks shape)
+#   - an ISO timestamp with an explicit +HH:MM/-HH:MM offset
+#   - a timestamp with no timezone marker at all
+#
+# In every case the result is an aware datetime explicitly anchored to
+# UTC. A naive (timezone-less) value is NEVER assumed to be in the
+# local system's timezone — it is explicitly treated as already being
+# UTC, per the SportMonks contract, instead of silently localized via
+# an implicit astimezone() call on a naive datetime (which previously
+# caused a 3-hour shift whenever starting_at arrived without a
+# trailing Z/offset).
+# ============================================================
+
+def parse_starting_at(value):
+
+    dt = datetime.fromisoformat(
+        value.replace("Z", "+00:00")
+    )
+
+    if dt.tzinfo is None:
+
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
+# ============================================================
 # DATE
 # ============================================================
 
@@ -181,14 +228,11 @@ def fixture_date(fixture):
 
     try:
 
-        dt = datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
+        dt = parse_starting_at(value)
 
         # Webflow DateTime requires ISO UTC
         return (
-            dt.astimezone(timezone.utc)
-            .isoformat(timespec="milliseconds")
+            dt.isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )
 
@@ -210,9 +254,7 @@ def fixture_time(fixture):
 
     try:
 
-        dt = datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
+        dt = parse_starting_at(value)
 
         # Convert UTC time to Saudi time
         dt = dt.astimezone(RIYADH_TZ)
@@ -267,7 +309,7 @@ def get_score(fixture, team_id):
 # SPORTS MONKS FIXTURES
 # ============================================================
 
-def sm_fixtures():
+def sm_fixtures(locale=None):
 
     today = datetime.now(timezone.utc).date()
 
@@ -310,6 +352,10 @@ def sm_fixtures():
 
             "per_page": 100,
         }
+
+        if locale:
+
+            params["locale"] = locale
 
         print()
         print(
@@ -411,6 +457,20 @@ def sm_fixtures():
 
 
 # ============================================================
+# SPORTS MONKS FIXTURES — ARABIC
+#
+# Thin wrapper around sm_fixtures(): identical endpoint, identical
+# date-range chunking/dedup logic, only "locale": "ar" differs in the
+# request params. No separate request-per-fixture — same bulk shape as
+# the English call.
+# ============================================================
+
+def sm_fixtures_arabic():
+
+    return sm_fixtures(locale="ar")
+
+
+# ============================================================
 # WEBFLOW COLLECTION
 # ============================================================
 
@@ -469,7 +529,7 @@ def print_webflow_fields(collection):
 # GET WEBFLOW ITEMS
 # ============================================================
 
-def wf_items():
+def wf_items(cms_locale_id=None):
 
     url = (
         f"{WF_BASE}/collections/"
@@ -479,6 +539,10 @@ def wf_items():
     params = {
         "limit": 100,
     }
+
+    if cms_locale_id:
+
+        params["cmsLocaleId"] = cms_locale_id
 
     response = requests.get(
         url,
@@ -511,6 +575,22 @@ def wf_items():
     )
 
     return items
+
+
+# ============================================================
+# GET WEBFLOW ITEMS — ARABIC
+#
+# Same endpoint/shape as wf_items(), scoped to the Arabic CMS locale via
+# cmsLocaleId. Only items that ALREADY have an Arabic locale row are
+# returned here — this is the pre-flight source used to decide which
+# fixtures are eligible for an Arabic update at all.
+# ============================================================
+
+def wf_items_arabic():
+
+    return wf_items(
+        cms_locale_id=ARABIC_CMS_LOCALE_ID
+    )
 
 
 # ============================================================
@@ -708,7 +788,8 @@ def create_webflow_item(field_data):
 
 def update_webflow_item(
     item_id,
-    field_data
+    field_data,
+    cms_locale_id=None
 ):
 
     url = (
@@ -725,6 +806,24 @@ def update_webflow_item(
     payload = {
         "fieldData": field_data
     }
+
+    if cms_locale_id:
+
+        # SAFEGUARD: an Arabic-sync caller must always pass the Arabic
+        # CMS locale id, never the primary one. This makes it
+        # structurally impossible for the Arabic code path to write to
+        # the primary/English locale.
+        assert cms_locale_id == ARABIC_CMS_LOCALE_ID, (
+            "update_webflow_item received a cms_locale_id that is not "
+            "the Arabic CMS locale — refusing to write."
+        )
+
+        assert cms_locale_id != PRIMARY_CMS_LOCALE_ID, (
+            "update_webflow_item must never target the primary locale "
+            "via cms_locale_id."
+        )
+
+        payload["cmsLocaleId"] = cms_locale_id
 
     response = requests.patch(
         url,
@@ -816,6 +915,400 @@ def publish_webflow_items(item_ids):
 
 
 # ============================================================
+# ARABIC — TRANSLATION CLASSIFICATION
+#
+# No manual glossary and no English fallback ever happens here. A value
+# is only ever written to the Arabic CMS locale when SportMonks' own
+# locale=ar response genuinely differs from the English value for that
+# same field. Missing or fallback-identical values are classified and
+# simply left out of the write payload — never replaced with "" and
+# never replaced with the English value.
+# ============================================================
+
+def classify_arabic_value(en_value, ar_value):
+
+    if not ar_value:
+        return "MISSING"
+
+    if ar_value == en_value:
+        return "FALLBACK"
+
+    return "TRANSLATED"
+
+
+# ============================================================
+# ARABIC — FIELD DATA
+#
+# Builds the fieldData dict for an Arabic CMS write. Language fields are
+# included ONLY when classify_arabic_value() returns "TRANSLATED" for
+# that field. Technical/dynamic fields are always included, sourced from
+# the already-fetched English fixture (fixture_en) — never requested a
+# second time from SportMonks, and never subject to translation logic
+# since they are locale-independent facts (a score is a score).
+# ============================================================
+
+def fixture_field_data_arabic(fixture_en, fixture_ar):
+
+    home_en, away_en = get_participants(fixture_en)
+    home_ar, away_ar = get_participants(fixture_ar)
+
+    field_data = {}
+
+    log_lines = []
+
+    home_en_name = participant_name(home_en)
+    home_ar_name = participant_name(home_ar)
+    home_status = classify_arabic_value(
+        home_en_name,
+        home_ar_name
+    )
+
+    if home_status == "TRANSLATED":
+        field_data["home-team-name"] = home_ar_name
+
+    log_lines.append(("home-team-name", home_status))
+
+    away_en_name = participant_name(away_en)
+    away_ar_name = participant_name(away_ar)
+    away_status = classify_arabic_value(
+        away_en_name,
+        away_ar_name
+    )
+
+    if away_status == "TRANSLATED":
+        field_data["away-team-name"] = away_ar_name
+
+    log_lines.append(("away-team-name", away_status))
+
+    # "name" is only regenerated when BOTH team names are genuinely
+    # translated this run — never a half-English/half-Arabic title.
+    if (
+        home_status == "TRANSLATED"
+        and away_status == "TRANSLATED"
+    ):
+        field_data["name"] = f"{home_ar_name} ضد {away_ar_name}"
+
+    venue_en = safe_text(
+        (fixture_en.get("venue") or {}).get("name", "")
+    )
+    venue_ar = safe_text(
+        (fixture_ar.get("venue") or {}).get("name", "")
+    )
+    venue_status = classify_arabic_value(
+        venue_en,
+        venue_ar
+    )
+
+    if venue_status == "TRANSLATED":
+        field_data["venue"] = venue_ar
+
+    log_lines.append(("venue", venue_status))
+
+    league_en = safe_text(
+        (fixture_en.get("league") or {}).get("name", "")
+    )
+    league_ar = safe_text(
+        (fixture_ar.get("league") or {}).get("name", "")
+    )
+    league_status = classify_arabic_value(
+        league_en,
+        league_ar
+    )
+
+    if league_status == "TRANSLATED":
+        field_data["league"] = league_ar
+
+    log_lines.append(("league", league_status))
+
+    # ========================================================
+    # TECHNICAL / DYNAMIC FIELDS
+    #
+    # Always sourced from the EN response — never translated, never
+    # requested a second time. Kept in sync so Arabic never shows a
+    # stale status/score/date relative to the live English fixture.
+    # ========================================================
+
+    home_id_en = participant_id(home_en)
+    away_id_en = participant_id(away_en)
+
+    state_en = fixture_en.get("state") or {}
+
+    field_data["status"] = safe_text(
+        state_en.get("name", "")
+    )
+
+    field_data["home-team-score"] = get_score(
+        fixture_en,
+        home_id_en
+    )
+
+    field_data["away-team-score"] = get_score(
+        fixture_en,
+        away_id_en
+    )
+
+    field_data["date-time"] = fixture_date(fixture_en)
+
+    field_data["time-3"] = fixture_time(fixture_en)
+
+    return field_data, log_lines
+
+
+# ============================================================
+# ARABIC SYNC
+#
+# Entirely additive and isolated from the English pass:
+#   - Only called when ARABIC_SYNC_ENABLED is True.
+#   - Only ever calls update_webflow_item() — never create_collection_items.
+#   - Only targets fixtures whose Webflow item already has an Arabic
+#     locale row (wf_items_arabic()) AND that row is not archived.
+#   - Every Webflow write goes through update_webflow_item() with
+#     cms_locale_id=ARABIC_CMS_LOCALE_ID, which asserts it is never the
+#     primary locale (see update_webflow_item()).
+#   - Never appends to touched_item_ids, so Arabic items are never
+#     published by the existing publish_webflow_items() call.
+#   - Any failure here (SportMonks request, Webflow request, or an
+#     unexpected exception) is caught locally so the already-completed
+#     English sync and its publish step are never affected.
+# ============================================================
+
+def sync_fixtures_arabic(
+    fixtures_en,
+    item_id_by_fixture_id
+):
+
+    print()
+    print("[AR] START")
+    print("[AR] SportMonks locale=ar")
+
+    stats = {
+        "fetched": 0,
+        "matched": 0,
+        "updated": 0,
+        "skipped_missing_variant": 0,
+        "skipped_archived_variant": 0,
+        "api_errors": 0,
+    }
+
+    try:
+
+        fixtures_ar = sm_fixtures_arabic()
+
+    except Exception as err:
+
+        print(
+            "[AR] SportMonks Arabic request failed:",
+            err
+        )
+        print("[AR] Arabic CMS preserved, Arabic sync skipped this run")
+
+        stats["api_errors"] += 1
+
+        return stats
+
+    stats["fetched"] = len(fixtures_ar)
+
+    print(
+        "[AR] Fixtures fetched:",
+        stats["fetched"]
+    )
+
+    try:
+
+        arabic_items = wf_items_arabic()
+
+    except Exception as err:
+
+        print(
+            "[AR] Webflow Arabic items request failed:",
+            err
+        )
+        print("[AR] Arabic CMS preserved, Arabic sync skipped this run")
+
+        stats["api_errors"] += 1
+
+        return stats
+
+    arabic_by_fixture_id = {}
+
+    for item in arabic_items:
+
+        field_data = (
+            item.get("fieldData")
+            or {}
+        )
+
+        fixture_id = field_data.get(
+            "sportsmonks-id"
+        )
+
+        if fixture_id:
+
+            arabic_by_fixture_id[
+                safe_text(fixture_id)
+            ] = item
+
+    fixtures_ar_by_id = {
+        safe_text(f.get("id")): f
+        for f in fixtures_ar
+    }
+
+    fixtures_en_by_id = {
+        safe_text(f.get("id")): f
+        for f in fixtures_en
+    }
+
+    for fixture_id, primary_item_id in item_id_by_fixture_id.items():
+
+        print()
+        print(
+            "[AR] Fixture",
+            fixture_id
+        )
+
+        # ====================================================
+        # ARABIC VARIANT EXISTENCE / ARCHIVED CHECK
+        #
+        # Missing and archived variants are both SKIP + LOG only.
+        # No create, no unarchive, no recreate, no publish.
+        # ====================================================
+
+        arabic_item = arabic_by_fixture_id.get(
+            fixture_id
+        )
+
+        if not arabic_item:
+
+            print("[AR] Arabic variant: MISSING")
+            print("[AR] Action: SKIP")
+
+            stats["skipped_missing_variant"] += 1
+
+            continue
+
+        if arabic_item.get("isArchived"):
+
+            print("[AR] Arabic variant: ARCHIVED")
+            print("[AR] Action: SKIP")
+
+            stats["skipped_archived_variant"] += 1
+
+            continue
+
+        if arabic_item.get("id") != primary_item_id:
+
+            # Should never happen — same logical item, same id across
+            # locales. Treat as a hard skip rather than guess.
+            print(
+                "[AR] Arabic item id mismatch, unexpected — SKIP"
+            )
+
+            stats["skipped_missing_variant"] += 1
+
+            continue
+
+        fixture_en = fixtures_en_by_id.get(
+            fixture_id
+        )
+        fixture_ar = fixtures_ar_by_id.get(
+            fixture_id
+        )
+
+        if not fixture_en or not fixture_ar:
+
+            print(
+                "[AR] Fixture not present in this run's fetch — SKIP"
+            )
+
+            stats["skipped_missing_variant"] += 1
+
+            continue
+
+        print("[AR] Arabic variant: FOUND")
+
+        stats["matched"] += 1
+
+        field_data, log_lines = fixture_field_data_arabic(
+            fixture_en,
+            fixture_ar
+        )
+
+        changed_fields = [
+            field
+            for field in field_data
+            if field not in (
+                "status",
+                "home-team-score",
+                "away-team-score",
+                "date-time",
+                "time-3",
+            )
+        ]
+
+        for label, status in log_lines:
+            print(
+                f"[AR]   {label}: {status}"
+            )
+
+        if changed_fields:
+            print(
+                "[AR] Changes:",
+                ", ".join(changed_fields)
+            )
+        else:
+            print(
+                "[AR] Changes: (none — only technical fields synced)"
+            )
+
+        if ARABIC_SYNC_DRY_RUN:
+
+            print("[AR] Action: DRY-RUN (no write performed)")
+
+        else:
+
+            try:
+
+                update_webflow_item(
+                    primary_item_id,
+                    field_data,
+                    cms_locale_id=ARABIC_CMS_LOCALE_ID
+                )
+
+                print("[AR] Action: UPDATE")
+
+                stats["updated"] += 1
+
+            except Exception as err:
+
+                print(
+                    "[AR] Webflow Arabic update failed:",
+                    err
+                )
+
+                stats["api_errors"] += 1
+
+        print("[AR] Publish: SKIPPED")
+
+    print()
+    print("[AR] SUMMARY")
+    print("Fetched:", stats["fetched"])
+    print("Matched:", stats["matched"])
+    print("Updated:", stats["updated"])
+    print(
+        "Skipped (missing variant):",
+        stats["skipped_missing_variant"]
+    )
+    print(
+        "Skipped (archived variant):",
+        stats["skipped_archived_variant"]
+    )
+    print("Errors:", stats["api_errors"])
+    print("Published: 0")
+
+    return stats
+
+
+# ============================================================
 # SYNC
 # ============================================================
 
@@ -876,6 +1369,11 @@ def sync_fixtures():
     changes_made = False
     touched_item_ids = []
 
+    # Tracks fixture_id -> Webflow (primary) item id for every fixture
+    # processed this run, so the Arabic sub-pass can match by the
+    # immutable sportsmonks-id without re-deriving anything.
+    item_id_by_fixture_id = {}
+
     # --------------------------------------------------------
     # Process fixtures
     # --------------------------------------------------------
@@ -928,6 +1426,10 @@ def sync_fixtures():
                 existing["id"]
             )
 
+            item_id_by_fixture_id[
+                fixture_id
+            ] = existing["id"]
+
             updated += 1
             changes_made = True
 
@@ -956,6 +1458,10 @@ def sync_fixtures():
                 touched_item_ids.append(
                     new_item_id
                 )
+
+                item_id_by_fixture_id[
+                    fixture_id
+                ] = new_item_id
 
             created += 1
             changes_made = True
@@ -1000,6 +1506,35 @@ def sync_fixtures():
     print(
         "========================================"
     )
+
+    # --------------------------------------------------------
+    # Arabic sync
+    #
+    # Entirely additive and isolated from everything above. Only runs
+    # at all when ARABIC_SYNC_ENABLED is True; wrapped so that any
+    # failure here can never affect the English create/update work
+    # already completed, or the Publish step immediately below.
+    # --------------------------------------------------------
+
+    if ARABIC_SYNC_ENABLED:
+
+        try:
+
+            sync_fixtures_arabic(
+                fixtures,
+                item_id_by_fixture_id
+            )
+
+        except Exception as err:
+
+            print()
+            print(
+                "[AR] Arabic sync raised an unexpected error:",
+                err
+            )
+            print(
+                "[AR] English sync unaffected, continuing to publish"
+            )
 
     # --------------------------------------------------------
     # Publish
