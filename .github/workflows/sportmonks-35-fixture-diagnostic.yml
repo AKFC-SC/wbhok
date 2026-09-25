@@ -2,16 +2,26 @@ name: SportMonks 35-Fixture Diagnostic (TEMPORARY)
 
 # TEMPORARY, READ-ONLY DIAGNOSTIC WORKFLOW.
 #
-# Purpose: fetch SportMonks fixture data (default/English and
-# locale=ar) for a FIXED, pre-verified list of 35 fixture ids — the
-# exact set confirmed via live Webflow data (this session) to have:
-# Primary item present, Primary NOT archived, a real sportsmonks-id,
-# and NO existing Arabic CMS variant. This workflow does NOT import or
-# call sync.py, does NOT reference WEBFLOW_API_TOKEN (or any Webflow
-# credential) anywhere, and makes ZERO requests to the Webflow API. It
-# never creates, updates, or publishes anything. It is manually
-# triggered only — no schedule, no push trigger. Intended to be
-# deleted after use.
+# Purpose: fetch SportMonks fixture data — ENGLISH ONLY, no locale=ar,
+# no Arabic endpoint call of any kind — for a FIXED, pre-verified list
+# of 35 fixture ids. This is deliberate per the newly adopted
+# architecture: Arabic team names/logos/city/stadium will come from a
+# Team CMS collection in Webflow (keyed by sportsmonks-team-id), never
+# from SportMonks' own Arabic translation. SportMonks here is only the
+# source of match/sporting data (score, status, date/time, league,
+# team ids). The 35 ids are the exact set confirmed via live Webflow
+# data (this session) to have: Primary item present, Primary NOT
+# archived, a real sportsmonks-id, and NO existing Arabic CMS variant.
+#
+# This workflow does NOT import or call sync.py, does NOT reference
+# WEBFLOW_API_TOKEN (or any Webflow credential) anywhere, and makes
+# ZERO requests to the Webflow API. It never creates, updates, or
+# publishes anything. No translation dictionary of any kind is used,
+# and no matching by team name is performed here — the raw
+# home_team_id/away_team_id are the only linking keys this workflow
+# outputs; matching against a Team CMS by sportsmonks-team-id happens
+# elsewhere, later, read-only. It is manually triggered only — no
+# schedule, no push trigger. Intended to be deleted after use.
 
 on:
   workflow_dispatch:
@@ -30,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Fetch SportMonks fixtures (default + locale=ar) for 35 fixed ids
+      - name: Fetch SportMonks fixtures (English only) for 35 fixed ids
         env:
           SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
         run: |
@@ -58,15 +68,14 @@ jobs:
           token = os.environ["SPORTSMONKS_API_TOKEN"]
 
 
-          def fetch(fixture_id, locale=None):
+          def fetch_english(fixture_id):
 
+              # No 'locale' param at all — English/default SportMonks
+              # response only. No Arabic endpoint is ever called.
               params = {
                   "api_token": token,
                   "include": INCLUDE,
               }
-
-              if locale:
-                  params["locale"] = locale
 
               url = f"{SM_BASE}/fixtures/{fixture_id}"
 
@@ -127,35 +136,33 @@ jobs:
 
           for fixture_id in FIXTURE_IDS:
 
-              entry = {"fixture_id": fixture_id}
-
               try:
-                  english = fetch(fixture_id, locale=None)
-              except Exception as err:
-                  entry["error"] = f"english fetch failed: {err}"
-                  results.append(entry)
-                  failed += 1
-                  continue
+                  english = fetch_english(fixture_id)
+                  results.append({
+                      "fixture_id": fixture_id,
+                      "english": english,
+                  })
+                  successful += 1
 
-              try:
-                  arabic = fetch(fixture_id, locale="ar")
               except Exception as err:
-                  entry["error"] = f"arabic fetch failed: {err}"
-                  results.append(entry)
+                  # Never guess: record the id and the real failure reason,
+                  # then continue to the rest of the fixtures.
+                  results.append({
+                      "fixture_id": fixture_id,
+                      "error": str(err),
+                  })
                   failed += 1
-                  continue
-
-              entry["english"] = english
-              entry["arabic"] = arabic
-              results.append(entry)
-              successful += 1
 
               # Be polite to the API between fixtures.
               time.sleep(0.3)
 
-          output = {"fixtures": results}
+          output = {
+              "successful_fetches": successful,
+              "failed_fetches": failed,
+              "fixtures": results,
+          }
 
-          print("::group::SportMonks 35-Fixture Diagnostic Result")
+          print("::group::SportMonks 35-Fixture Diagnostic Result (English only)")
           print(json.dumps(output, ensure_ascii=False, indent=2))
           print("::endgroup::")
 
@@ -166,9 +173,12 @@ jobs:
 
       - name: Confirm scope and safety properties
         run: |
+          echo "Locale used: English only (no locale=ar, no Arabic endpoint call)"
           echo "Webflow calls: 0"
           echo "Webflow writes: 0"
           echo "Webflow publishes: 0"
           echo "sync.py imported: NO"
           echo "Production sync invoked: NO"
+          echo "Translation dictionary used: NO"
+          echo "Matched by team name: NO (raw team ids only)"
           echo "Scope: 35 fixed, pre-verified fixture ids only"
