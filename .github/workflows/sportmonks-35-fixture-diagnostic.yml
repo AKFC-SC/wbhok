@@ -1,0 +1,174 @@
+name: SportMonks 35-Fixture Diagnostic (TEMPORARY)
+
+# TEMPORARY, READ-ONLY DIAGNOSTIC WORKFLOW.
+#
+# Purpose: fetch SportMonks fixture data (default/English and
+# locale=ar) for a FIXED, pre-verified list of 35 fixture ids — the
+# exact set confirmed via live Webflow data (this session) to have:
+# Primary item present, Primary NOT archived, a real sportsmonks-id,
+# and NO existing Arabic CMS variant. This workflow does NOT import or
+# call sync.py, does NOT reference WEBFLOW_API_TOKEN (or any Webflow
+# credential) anywhere, and makes ZERO requests to the Webflow API. It
+# never creates, updates, or publishes anything. It is manually
+# triggered only — no schedule, no push trigger. Intended to be
+# deleted after use.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch SportMonks fixtures (default + locale=ar) for 35 fixed ids
+        env:
+          SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import time
+
+          import requests
+
+          # Fixed, pre-verified list — do not add/remove ids here without
+          # re-running the Webflow eligibility check this list came from.
+          FIXTURE_IDS = [
+              19712052, 19777675, 19777690, 19777692, 19777704, 19777711,
+              19778724, 19778731, 19778742, 19778755, 19778760, 19778769,
+              19778776, 19778783, 19778811, 19778834, 19778849, 19778863,
+              19778879, 19778900, 19778926, 19778934, 19778952, 19778967,
+              19778993, 19779009, 19779029, 19779054, 19779065, 19779090,
+              19779102, 19779125, 19779145, 19779165, 19880098,
+          ]
+
+          SM_BASE = "https://api.sportmonks.com/v3/football"
+          INCLUDE = "participants;venue;league;scores;state"
+
+          token = os.environ["SPORTSMONKS_API_TOKEN"]
+
+
+          def fetch(fixture_id, locale=None):
+
+              params = {
+                  "api_token": token,
+                  "include": INCLUDE,
+              }
+
+              if locale:
+                  params["locale"] = locale
+
+              url = f"{SM_BASE}/fixtures/{fixture_id}"
+
+              response = requests.get(url, params=params, timeout=30)
+              response.raise_for_status()
+
+              data = response.json().get("data") or {}
+
+              participants = data.get("participants") or []
+
+              home = next(
+                  (
+                      p for p in participants
+                      if (p.get("meta") or {}).get("location") == "home"
+                  ),
+                  None,
+              )
+              away = next(
+                  (
+                      p for p in participants
+                      if (p.get("meta") or {}).get("location") == "away"
+                  ),
+                  None,
+              )
+
+              scores = data.get("scores") or []
+
+              def score_for(participant_id):
+                  for s in scores:
+                      if (
+                          s.get("participant_id") == participant_id
+                          and s.get("description") == "CURRENT"
+                      ):
+                          return (s.get("score") or {}).get("goals")
+                  return None
+
+              return {
+                  "fixture_id": data.get("id"),
+                  "fixture_name": data.get("name"),
+                  "starting_at": data.get("starting_at"),
+                  "state_name": (data.get("state") or {}).get("name"),
+                  "home_team_id": home.get("id") if home else None,
+                  "home_team_name": home.get("name") if home else None,
+                  "home_score": score_for(home.get("id")) if home else None,
+                  "away_team_id": away.get("id") if away else None,
+                  "away_team_name": away.get("name") if away else None,
+                  "away_score": score_for(away.get("id")) if away else None,
+                  "venue_id": (data.get("venue") or {}).get("id"),
+                  "venue_name": (data.get("venue") or {}).get("name"),
+                  "league_id": (data.get("league") or {}).get("id"),
+                  "league_name": (data.get("league") or {}).get("name"),
+              }
+
+
+          results = []
+          successful = 0
+          failed = 0
+
+          for fixture_id in FIXTURE_IDS:
+
+              entry = {"fixture_id": fixture_id}
+
+              try:
+                  english = fetch(fixture_id, locale=None)
+              except Exception as err:
+                  entry["error"] = f"english fetch failed: {err}"
+                  results.append(entry)
+                  failed += 1
+                  continue
+
+              try:
+                  arabic = fetch(fixture_id, locale="ar")
+              except Exception as err:
+                  entry["error"] = f"arabic fetch failed: {err}"
+                  results.append(entry)
+                  failed += 1
+                  continue
+
+              entry["english"] = english
+              entry["arabic"] = arabic
+              results.append(entry)
+              successful += 1
+
+              # Be polite to the API between fixtures.
+              time.sleep(0.3)
+
+          output = {"fixtures": results}
+
+          print("::group::SportMonks 35-Fixture Diagnostic Result")
+          print(json.dumps(output, ensure_ascii=False, indent=2))
+          print("::endgroup::")
+
+          print()
+          print("successful_fetches:", successful)
+          print("failed_fetches:", failed)
+          PYEOF
+
+      - name: Confirm scope and safety properties
+        run: |
+          echo "Webflow calls: 0"
+          echo "Webflow writes: 0"
+          echo "Webflow publishes: 0"
+          echo "sync.py imported: NO"
+          echo "Production sync invoked: NO"
+          echo "Scope: 35 fixed, pre-verified fixture ids only"
