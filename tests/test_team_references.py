@@ -150,7 +150,7 @@ TEAMS = [team("T-KHOLOOD", "232744"), team("T-SHABAB", "16184")]
 sync.TEAM_REFERENCES_ENABLED = False
 import importlib  # noqa: E402
 importlib.reload(sync)
-check("flag defaults to False", sync.TEAM_REFERENCES_ENABLED is False)
+check("flag is enabled by default", sync.TEAM_REFERENCES_ENABLED is True)
 check("Arabic sync flag unchanged (False)", sync.ARABIC_SYNC_ENABLED is False)
 check("team collection id", sync.TEAM_COLLECTION_ID == "6a9c2ff98dd513bfc472db69")
 

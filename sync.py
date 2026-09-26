@@ -22,7 +22,7 @@ TEAM_COLLECTION_ID = "6a9c2ff98dd513bfc472db69"
 
 # Feature flag. While False the sync behaves exactly as before: Team CMS
 # is not read and home-team / away-team are never written.
-TEAM_REFERENCES_ENABLED = False
+TEAM_REFERENCES_ENABLED = True
 
 COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
