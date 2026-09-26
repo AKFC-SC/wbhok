@@ -1322,6 +1322,66 @@ def publish_webflow_items(item_ids):
 
 
 # ============================================================
+# PUBLISH — ARABIC FIRST-TEAM FIXTURES
+#
+# Publishes ONLY the Arabic locale of the given Fixtures items, using the
+# per-locale request shape (items + cmsLocaleIds). The caller passes only
+# ids whose Arabic UPDATE just succeeded; this function never publishes
+# anything else (not Team variants, not legacy rows, not the primary
+# locale). A failure is raised to the caller, which contains it.
+# ============================================================
+
+def publish_arabic_fixture_items(item_ids):
+
+    if not item_ids:
+        return
+
+    assert all(item_ids), "publish_arabic_fixture_items needs real item ids"
+
+    url = (
+        f"{WF_BASE}/collections/"
+        f"{COLLECTION_ID}/items/publish"
+    )
+
+    for i in range(0, len(item_ids), 100):
+
+        batch = item_ids[i:i + 100]
+
+        payload = {
+            "items": [
+                {"id": item_id, "cmsLocaleIds": [ARABIC_CMS_LOCALE_ID]}
+                for item_id in batch
+            ]
+        }
+
+        response = requests.post(
+            url,
+            headers=wf_headers(),
+            json=payload,
+            timeout=30,
+        )
+
+        print(
+            "PUBLISH ARABIC STATUS:",
+            response.status_code
+        )
+
+        if not response.ok:
+
+            print(
+                "PUBLISH ARABIC RESPONSE:",
+                response.text
+            )
+
+            response.raise_for_status()
+
+        print(
+            "Published Arabic fixtures:",
+            len(batch)
+        )
+
+
+# ============================================================
 # ARABIC — SOURCES OF TRUTH
 #
 # Nothing Arabic comes from SportMonks' locale=ar response and nothing
@@ -1572,8 +1632,12 @@ def _arabic_value(value):
 #   - Updates send only the fields whose value actually differs.
 #   - Writes go through update_webflow_item(cms_locale_id=Arabic) /
 #     create_webflow_item_arabic_variant() only: the primary locale is
-#     structurally unreachable. Nothing is ever published, and Team CMS
-#     is never written.
+#     structurally unreachable. Team CMS is never written.
+#   - Publishing: only the Arabic row of a fixture whose Arabic UPDATE
+#     just succeeded with real changes, is complete (both Arabic Team
+#     references and an Arabic league) and is not a draft, and only in
+#     the Arabic locale. Unchanged, draft, incomplete, failed, created
+#     and legacy rows are never published. No publish in dry-run.
 #   - Any failure is caught locally so the completed English sync and its
 #     publish step are never affected.
 # ============================================================
@@ -1620,8 +1684,16 @@ def sync_fixtures_arabic(
         "skipped_archived_primary": 0,
         "skipped_not_in_run": 0,
         "skipped_missing_required_field": 0,
+        "would_publish": 0,
+        "published": 0,
+        "skipped_publish_draft": 0,
+        "skipped_publish_incomplete": 0,
+        "publish_errors": 0,
         "api_errors": 0,
     }
+
+    # Arabic rows whose UPDATE succeeded and that may go live
+    publish_ids = []
 
     try:
 
@@ -1875,11 +1947,24 @@ def sync_fixtures_arabic(
 
         print("[AR] Changes:", ", ".join(sorted(changes)))
 
+        # Publishing is only ever considered for a complete row (both
+        # Arabic teams resolved and the league mapped) that is not a draft.
+        if missing or "league" not in field_data:
+            publish_state = "incomplete"
+        elif arabic_item.get("isDraft"):
+            publish_state = "draft"
+        else:
+            publish_state = "ok"
+
         if ARABIC_SYNC_DRY_RUN:
 
             print("[AR] Action: DRY-RUN UPDATE (no write performed)")
 
             stats["would_update"] += 1
+
+            if publish_state == "ok":
+                print("[AR] Publish: DRY-RUN (would publish Arabic)")
+                stats["would_publish"] += 1
 
             continue
 
@@ -1895,11 +1980,36 @@ def sync_fixtures_arabic(
 
             stats["updated"] += 1
 
+            if publish_state == "ok":
+                publish_ids.append(primary_item_id)
+            elif publish_state == "draft":
+                print("[AR] Publish: SKIPPED (Arabic row is a draft)")
+                stats["skipped_publish_draft"] += 1
+            else:
+                print("[AR] Publish: SKIPPED (Arabic data incomplete)")
+                stats["skipped_publish_incomplete"] += 1
+
         except Exception as err:
 
             print("[AR] Webflow Arabic update failed:", err)
 
             stats["api_errors"] += 1
+
+    # Publish only what was just updated successfully, in one go. A failure
+    # here is contained: the updates already written stay as they are.
+    if publish_ids:
+
+        try:
+
+            publish_arabic_fixture_items(publish_ids)
+
+            stats["published"] += len(publish_ids)
+
+        except Exception as err:
+
+            print("[AR] Arabic publish failed:", err)
+
+            stats["publish_errors"] += len(publish_ids)
 
     print()
     print("[AR] SUMMARY")
@@ -1908,7 +2018,7 @@ def sync_fixtures_arabic(
 
         print(f"{key}: {value}")
 
-    print("Published: 0")
+    print("Published:", stats["published"])
 
     return stats
 

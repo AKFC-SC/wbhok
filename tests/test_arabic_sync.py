@@ -62,6 +62,8 @@ class Transport:
             (sync.TEAM_COLLECTION_ID, AR): list(teams_ar),
         }
         self.calls = []
+        self.fail_arabic_patch = False
+        self.publish_status = 200
 
     def get(self, url, headers=None, params=None, timeout=None):
         params = params or {}
@@ -81,11 +83,15 @@ class Transport:
             return Resp(200, {"items": [{"id": item["id"],
                                          "cmsLocaleId": item["cmsLocaleIds"][0]}]})
         if url.endswith("/items/publish"):
-            return Resp(200, {})
+            # only the Arabic (items/cmsLocaleIds) publish can be made to fail;
+            # the English itemIds publish is fatal by design and stays 200
+            return Resp(self.publish_status if "items" in (json or {}) else 200, {})
         return Resp(200, {"id": "NEW-EN"})
 
     def patch(self, url, headers=None, json=None, timeout=None):
         self.calls.append(("PATCH", url, None, json))
+        if self.fail_arabic_patch and (json or {}).get("cmsLocaleId"):
+            return Resp(500, {})
         return Resp(200, {})
 
     def install(self):
@@ -99,6 +105,10 @@ class Transport:
             if m == "PATCH" and body and body.get("cmsLocaleId"):
                 out.append((m, url, body))
         return out
+
+    def arabic_patches(self):
+        return [c for c in self.calls
+                if c[0] == "PATCH" and (c[3] or {}).get("cmsLocaleId")]
 
     def en_patches(self):
         return [c for c in self.calls if c[0] == "PATCH" and not (c[3] or {}).get("cmsLocaleId")]
@@ -386,6 +396,108 @@ check("non-Arabic row in the Arabic read: Arabic sync aborts, no write", t.arabi
 t = fresh([en_row("E1", 1001)], [])
 out = run(t, [f1], teams_flag=False)
 check("Team CMS unavailable: no Arabic write", t.arabic_writes() == [])
+
+# ============================================================ 9. ARABIC PUBLISH
+def arabic_publishes(t):
+    return [c for c in t.calls
+            if c[0] == "POST" and c[1].endswith("/items/publish") and "items" in (c[3] or {})]
+
+
+def english_publishes(t):
+    return [c for c in t.calls
+            if c[0] == "POST" and c[1].endswith("/items/publish") and "itemIds" in (c[3] or {})]
+
+
+def live_ar(item_id, fid, **fd):
+    row = ar_row(item_id, fid, **{"name": "الخلود ضد الشباب", "home-team-name": "الخلود",
+                                  "away-team-name": "الشباب", "league": "دوري روشن",
+                                  "status": "Not Started", "venue": "Ar-Rass Stadium",
+                                  "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 PM", **fd})
+    row["isDraft"] = False
+    return row
+
+
+CHANGED = sm_fixture(300, KH, SH, state="Full Time")
+
+# changed + complete + not draft -> PATCH first, then one Arabic-only publish of that item
+t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
+run(t, [CHANGED])
+ap = arabic_publishes(t)
+patch_idx = next(i for i, c in enumerate(t.calls) if c[0] == "PATCH" and (c[3] or {}).get("cmsLocaleId") == AR)
+pub_idx = next(i for i, c in enumerate(t.calls) if c in ap)
+check("publish: exactly one Arabic publish after a successful update", len(ap) == 1 and t.arabic_patches())
+check("publish: it happens AFTER the Arabic PATCH", pub_idx > patch_idx)
+check("publish: Arabic locale only, only the updated item, Fixtures collection",
+      ap[0][3] == {"items": [{"id": "E30", "cmsLocaleIds": [AR]}]}
+      and f"/collections/{sync.COLLECTION_ID}/" in ap[0][1])
+check("publish: the English publish stays a plain itemIds publish", all(set(c[3]) == {"itemIds"} for c in english_publishes(t)))
+
+# unchanged -> no publish at all
+t = fresh([en_row("E31", 301)], [live_ar("E31", 301, **{"home-team-score": None})])
+run(t, [sm_fixture(301, KH, SH)])
+check("publish: unchanged row -> no Arabic write and no Arabic publish", t.arabic_patches() == [] and arabic_publishes(t) == [])
+
+# draft Arabic row: updated, never published
+t = fresh([en_row("E32", 302)], [ar_row("E32", 302, **{"name": "x", "status": "Not Started"})])
+out = run(t, [sm_fixture(302, KH, SH, state="Full Time")])
+check("publish: draft Arabic row is updated but not published", t.arabic_patches() and arabic_publishes(t) == [])
+check("publish: draft skip is logged", "Arabic row is a draft" in out)
+
+# failed PATCH -> no publish
+t = fresh([en_row("E33", 303)], [live_ar("E33", 303)])
+t.fail_arabic_patch = True
+out = run(t, [sm_fixture(303, KH, SH, state="Full Time")])
+check("publish: failed Arabic update -> no publish", arabic_publishes(t) == [] and "Arabic update failed" in out)
+check("publish: failed Arabic update does not stop the English publish", len(english_publishes(t)) == 1)
+
+# missing Arabic Team (incomplete data) -> technical update only, no publish
+t = fresh([en_row("E34", 304)], [live_ar("E34", 304)])
+out = run(t, [sm_fixture(304, KH, UNKNOWN, state="Full Time")])
+check("publish: incomplete data (missing Arabic Team) -> updated but not published",
+      t.arabic_patches() and arabic_publishes(t) == [] and "data incomplete" in out)
+
+# unmapped league -> incomplete -> no publish
+t = fresh([en_row("E35", 305)], [live_ar("E35", 305)])
+run(t, [sm_fixture(305, KH, SH, league="Some Other Cup", state="Full Time")])
+check("publish: unmapped league -> no publish", arabic_publishes(t) == [])
+
+# dry run -> nothing published, but reported
+t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
+out = run(t, [CHANGED], dry=True)
+check("publish: dry run performs no Arabic publish", arabic_publishes(t) == [] and "would publish Arabic" in out)
+
+# only the fixture that was updated is published; legacy / unchanged rows are not
+t = fresh([en_row("E40", 400), en_row("E41", 401), en_row("E42", 402)],
+              [live_ar("E40", 400), live_ar("E41", 401, **{"home-team-score": None}),
+               ar_row("E42", 402, managed=False)])
+run(t, [sm_fixture(400, KH, SH, state="Full Time"), sm_fixture(401, KH, SH),
+        sm_fixture(402, KH, SH, state="Full Time")])
+ap = arabic_publishes(t)
+check("publish: only the updated fixture is published (unchanged and legacy are not)",
+      len(ap) == 1 and ap[0][3]["items"] == [{"id": "E40", "cmsLocaleIds": [AR]}])
+
+# create is unchanged behaviour: variant created as a draft, not published
+t = fresh([en_row("E50", 500)], [])
+run(t, [sm_fixture(500, KH, SH)])
+check("publish: a newly created Arabic variant is not published", t.arabic_writes() and arabic_publishes(t) == [])
+
+# a publish failure is contained
+t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
+t.publish_status = 500
+out = run(t, [CHANGED])
+check("publish: an Arabic publish failure is contained and logged",
+      "Arabic publish failed" in out and t.arabic_patches())
+
+# no Team collection publish, ever
+check("publish: no publish call ever targets the Team collection",
+      not any(c[0] == "POST" and sync.TEAM_COLLECTION_ID in c[1] for c in t.calls))
+
+# second identical run -> no repeat publish (idempotent)
+after = live_ar("E30", 300, status="Full Time")
+t = fresh([en_row("E30", 300)], [after])
+run(t, [CHANGED])
+check("publish: second run with no change -> no Arabic write, no publish",
+      t.arabic_patches() == [] and arabic_publishes(t) == [])
 
 # ============================================================ 8. DIRECT GUARDS
 try:
