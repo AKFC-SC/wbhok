@@ -155,7 +155,7 @@ import importlib  # noqa: E402
 importlib.reload(sync)
 check("flag is enabled by default", sync.TEAM_REFERENCES_ENABLED is True)
 check("Arabic sync flag is enabled by default", sync.ARABIC_SYNC_ENABLED is True)
-check("Arabic sync stays in dry-run by default", sync.ARABIC_SYNC_DRY_RUN is True)
+check("Arabic sync runs live (not dry-run) by default", sync.ARABIC_SYNC_DRY_RUN is False)
 check("team collection id", sync.TEAM_COLLECTION_ID == "6a9c2ff98dd513bfc472db69")
 
 # ------------------------------------------------- build_team_map filtering

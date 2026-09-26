@@ -39,7 +39,7 @@ ARABIC_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0d"
 PRIMARY_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0c"
 
 ARABIC_SYNC_ENABLED = True
-ARABIC_SYNC_DRY_RUN = True
+ARABIC_SYNC_DRY_RUN = False
 
 # How many days before "today" the SportMonks fixture query also covers, so a
 # match that finished right before UTC midnight can still receive a late
