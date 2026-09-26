@@ -25,9 +25,11 @@ import requests
 # not return is simply left out — never sent as 0. "Clearances" is not
 # available on this plan and is never written.
 #
-# Disabled by default and not part of .github/workflows/sync.yml: turn on
-# MATCH_STATS_SYNC_ENABLED (and, for live writes, MATCH_STATS_SYNC_DRY_RUN
-# = False) only after a dry run has been reviewed.
+# Runs as the last step of .github/workflows/sync.yml. An existing item is
+# only PATCHed when SportMonks disagrees with what it holds (SportMonks is the
+# source of truth); fields SportMonks has no value for are never cleared.
+# MATCH_STATS_SYNC_ENABLED=False switches it off; MATCH_STATS_SYNC_DRY_RUN=True
+# turns every write into a log line.
 # ============================================================
 
 SM_TOKEN = os.environ["SPORTSMONKS_API_TOKEN"]
@@ -39,8 +41,8 @@ STATS_COLLECTION_ID = "6a84e508b00e99eb71d4836e"
 PRIMARY_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0c"
 ARABIC_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0d"
 
-MATCH_STATS_SYNC_ENABLED = False
-MATCH_STATS_SYNC_DRY_RUN = True
+MATCH_STATS_SYNC_ENABLED = True
+MATCH_STATS_SYNC_DRY_RUN = False
 
 FINISHED_STATUS = "Full Time"
 

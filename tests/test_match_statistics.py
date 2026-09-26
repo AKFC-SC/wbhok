@@ -113,7 +113,11 @@ def run(t, enabled=True, dry=False):
     return buf.getvalue(), result
 
 
-check("defaults: disabled and dry-run", ms.MATCH_STATS_SYNC_ENABLED is False and ms.MATCH_STATS_SYNC_DRY_RUN is True)
+check("defaults: enabled and live", ms.MATCH_STATS_SYNC_ENABLED is True and ms.MATCH_STATS_SYNC_DRY_RUN is False)
+_wf = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", "sync.yml")).read()
+check("sync.yml runs the statistics sync after the fixture syncs",
+      "python sync_match_statistics.py" in _wf and _wf.index("python sync.py") < _wf.index("python sync_u21.py") < _wf.index("python sync_match_statistics.py"))
+check("sync.yml keeps its cron and manual trigger", 'cron: "17 * * * *"' in _wf and "workflow_dispatch" in _wf)
 
 # ------------------------------------------------ values
 v = ms.build_values(sm_fixture("100"))
