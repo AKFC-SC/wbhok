@@ -138,6 +138,9 @@ def run_sync(transport, fixtures, enabled=True):
     install(transport)
     sync.sm_fixtures = lambda locale=None: fixtures
     sync.TEAM_REFERENCES_ENABLED = enabled
+    # This suite covers the English team references only; the Arabic pass
+    # has its own suite (test_arabic_sync.py) and would add an Arabic read.
+    sync.ARABIC_SYNC_ENABLED = False
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         sync.sync_fixtures()
@@ -151,7 +154,8 @@ sync.TEAM_REFERENCES_ENABLED = False
 import importlib  # noqa: E402
 importlib.reload(sync)
 check("flag is enabled by default", sync.TEAM_REFERENCES_ENABLED is True)
-check("Arabic sync flag unchanged (False)", sync.ARABIC_SYNC_ENABLED is False)
+check("Arabic sync flag is enabled by default", sync.ARABIC_SYNC_ENABLED is True)
+check("Arabic sync stays in dry-run by default", sync.ARABIC_SYNC_DRY_RUN is True)
 check("team collection id", sync.TEAM_COLLECTION_ID == "6a9c2ff98dd513bfc472db69")
 
 # ------------------------------------------------- build_team_map filtering
