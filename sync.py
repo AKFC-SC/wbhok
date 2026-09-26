@@ -1277,7 +1277,7 @@ def publish_webflow_items(item_ids):
     # www.alkholoodclub.com. Batched at 100 per request (Webflow's own
     # limit on this endpoint).
     #
-    # Unlike sync_u21_players.py's publish step, a failure here is FATAL
+    # A failure here is FATAL
     # (raise_for_status is allowed to propagate): if the CMS write
     # succeeded but the publish fails, the live site would silently keep
     # serving stale data, so the run must fail loudly instead of masking it.
