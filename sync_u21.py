@@ -21,6 +21,27 @@ LEAGUE_ID = 3569
 
 COLLECTION_ID = "6a8ffc2c6f62bbad44381165"
 
+# Arabic locale of the SAME collection. Each U21 fixture has a linked Arabic
+# variant (same item id as the Primary item). The Arabic pass below only ever
+# UPDATES those existing variants, and only their technical fields — it never
+# creates a variant, never sends names / league / logos (those are editorial
+# and are translated by hand), never touches the primary locale, and never
+# publishes. See sync_u21_fixtures_arabic().
+ARABIC_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0d"
+PRIMARY_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0c"
+
+U21_ARABIC_SYNC_ENABLED = True
+U21_ARABIC_SYNC_DRY_RUN = False
+
+ARABIC_TECHNICAL_FIELDS = (
+    "starting-at",
+    "time",
+    "venue",
+    "home-team-score",
+    "away-team-score",
+    "state",
+)
+
 SM_BASE = "https://api.sportmonks.com/v3/football"
 WF_BASE = "https://api.webflow.com/v2"
 
@@ -232,9 +253,11 @@ def get_collection():
     return response.json()
 
 
-def wf_items():
+def wf_items(cms_locale_id=None):
     url = f"{WF_BASE}/collections/{COLLECTION_ID}/items"
     params = {"limit": 100}
+    if cms_locale_id:
+        params["cmsLocaleId"] = cms_locale_id
     response = requests.get(url, headers=wf_headers(), params=params, timeout=30)
     print("ITEMS STATUS:", response.status_code)
     if not response.ok:
@@ -302,9 +325,14 @@ def create_webflow_item(field_data):
     print("Created U21 fixture:", field_data.get("fixture-id"))
 
 
-def update_webflow_item(item_id, field_data):
+def update_webflow_item(item_id, field_data, cms_locale_id=None):
     url = f"{WF_BASE}/collections/{COLLECTION_ID}/items/{item_id}"
     payload = {"fieldData": field_data}
+    if cms_locale_id:
+        # Only the Arabic locale may ever be targeted explicitly.
+        assert cms_locale_id == ARABIC_CMS_LOCALE_ID
+        assert cms_locale_id != PRIMARY_CMS_LOCALE_ID
+        payload["cmsLocaleId"] = cms_locale_id
     response = requests.patch(url, headers=wf_headers(), json=payload, timeout=30)
     print("UPDATE STATUS:", response.status_code)
     if not response.ok:
@@ -312,6 +340,87 @@ def update_webflow_item(item_id, field_data):
         print("UPDATE PAYLOAD:", field_data)
         response.raise_for_status()
     print("Updated U21 fixture:", field_data.get("fixture-id"))
+
+
+# ============================================================
+# ARABIC — U21 FIXTURES (update-only mirror of technical fields)
+#
+# Keeps the existing Arabic variants in step with the English ones:
+# date, time, venue, score and state come from the very same builder the
+# English pass uses. Rows are matched by ITEM ID (an Arabic variant shares
+# the Primary item's id). A fixture without an Arabic variant is skipped —
+# nothing is created here. Unchanged values cause no request at all.
+# ============================================================
+
+def _arabic_value(value):
+    return "" if value is None else str(value)
+
+
+def sync_u21_fixtures_arabic(fixtures, item_id_by_fixture_id):
+    print()
+    print("[U21 AR] START | dry run:", "YES" if U21_ARABIC_SYNC_DRY_RUN else "NO")
+
+    stats = {"considered": 0, "updated": 0, "would_update": 0,
+             "unchanged": 0, "skipped_missing_variant": 0, "api_errors": 0}
+
+    try:
+        arabic_items = wf_items(cms_locale_id=ARABIC_CMS_LOCALE_ID)
+    except Exception as err:
+        print("[U21 AR] Webflow Arabic read failed:", err)
+        stats["api_errors"] += 1
+        return stats
+
+    if any(i.get("cmsLocaleId") != ARABIC_CMS_LOCALE_ID for i in arabic_items):
+        print("[U21 AR] Read returned a non-Arabic row — skipped, no write")
+        stats["api_errors"] += 1
+        return stats
+
+    arabic_by_item_id = {i.get("id"): i for i in arabic_items}
+    fixtures_by_id = {safe_text(f.get("id")): f for f in fixtures}
+
+    for fixture_id, item_id in item_id_by_fixture_id.items():
+        fixture = fixtures_by_id.get(fixture_id)
+        if not fixture:
+            continue
+
+        stats["considered"] += 1
+        arabic = arabic_by_item_id.get(item_id)
+
+        if not arabic or arabic.get("isArchived"):
+            print("[U21 AR] Fixture", fixture_id, "has no active Arabic variant — SKIP")
+            stats["skipped_missing_variant"] += 1
+            continue
+
+        wanted = fixture_field_data(fixture, include_logos=False)
+        wanted = {k: wanted[k] for k in ARABIC_TECHNICAL_FIELDS}
+        existing = arabic.get("fieldData") or {}
+
+        changes = {
+            k: v for k, v in wanted.items()
+            if _arabic_value(existing.get(k)) != _arabic_value(v)
+        }
+
+        if not changes:
+            stats["unchanged"] += 1
+            continue
+
+        assert set(changes) <= set(ARABIC_TECHNICAL_FIELDS)
+
+        print("[U21 AR] Fixture", fixture_id, "changes:", ", ".join(sorted(changes)))
+
+        if U21_ARABIC_SYNC_DRY_RUN:
+            stats["would_update"] += 1
+            continue
+
+        try:
+            update_webflow_item(item_id, changes, cms_locale_id=ARABIC_CMS_LOCALE_ID)
+            stats["updated"] += 1
+        except Exception as err:
+            print("[U21 AR] Webflow Arabic update failed:", err)
+            stats["api_errors"] += 1
+
+    print("[U21 AR] SUMMARY", stats, "| Published: 0")
+    return stats
 
 
 # ============================================================
@@ -335,6 +444,9 @@ def sync_u21_fixtures():
     created = 0
     updated = 0
 
+    # fixture id -> Primary item id for every existing item updated this run
+    item_id_by_fixture_id = {}
+
     for fixture in fixtures:
         fixture_id = safe_text(fixture.get("id"))
         if not fixture_id:
@@ -349,6 +461,7 @@ def sync_u21_fixtures():
             print("Updating U21 fixture", fixture_id)
             field_data = fixture_field_data(fixture, include_logos=False)
             update_webflow_item(existing["id"], field_data)
+            item_id_by_fixture_id[fixture_id] = existing["id"]
             updated += 1
         else:
             print("Creating U21 fixture", fixture_id)
@@ -362,6 +475,14 @@ def sync_u21_fixtures():
     print(f"U21 Webflow items created: {created}")
     print(f"U21 Webflow items updated: {updated}")
     print("========================================")
+
+    # Arabic mirror: isolated, so a failure here can never affect the
+    # English work already done above.
+    if U21_ARABIC_SYNC_ENABLED:
+        try:
+            sync_u21_fixtures_arabic(fixtures, item_id_by_fixture_id)
+        except Exception as err:
+            print("[U21 AR] Arabic pass raised an unexpected error:", err)
 
 
 def main():
