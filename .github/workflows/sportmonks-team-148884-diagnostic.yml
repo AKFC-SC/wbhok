@@ -1,0 +1,109 @@
+name: SportMonks Team 148884 Diagnostic (TEMPORARY)
+
+# TEMPORARY, READ-ONLY DIAGNOSTIC WORKFLOW.
+#
+# Purpose: fetch the raw SportMonks team record for team id 148884 (the
+# single team from the 35-fixture set that has no matching item in the
+# First Team Club Logos collection), so its available data can be
+# reviewed before anything is added to Webflow. English/default
+# response only — no locale=ar. The ONLY request made is one HTTP GET
+# to the SportMonks API. This workflow does NOT import or call sync.py,
+# does NOT reference any Webflow credential, and makes ZERO requests to
+# Webflow. It never creates, updates, or publishes anything. Manually
+# triggered only — no schedule, no push trigger. Intended to be deleted
+# after use.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch SportMonks team 148884 (GET only, English)
+        env:
+          SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+
+          import requests
+
+          TEAM_ID = 148884
+          SM_BASE = "https://api.sportmonks.com/v3/football"
+
+          token = os.environ["SPORTSMONKS_API_TOKEN"]
+
+          response = requests.get(
+              f"{SM_BASE}/teams/{TEAM_ID}",
+              params={
+                  "api_token": token,
+                  "include": "venue;country",
+              },
+              timeout=30,
+          )
+
+          # Never print the request URL (it carries the token as a query
+          # parameter) — only the status code and the response body.
+          print("HTTP status:", response.status_code)
+
+          if not response.ok:
+              print("REQUEST FAILED")
+              print(response.text)
+              raise SystemExit(1)
+
+          data = response.json().get("data") or {}
+
+          venue = data.get("venue") or {}
+          country = data.get("country") or {}
+
+          def val(value):
+              return value if value not in (None, "") else "NOT_AVAILABLE"
+
+          summary = {
+              "id": val(data.get("id")),
+              "name": val(data.get("name")),
+              "short_code": val(data.get("short_code")),
+              "image_path": val(data.get("image_path")),
+              "country_id": val(data.get("country_id")),
+              "country_name": val(country.get("name")),
+              "founded": val(data.get("founded")),
+              "type": val(data.get("type")),
+              "venue_id": val(data.get("venue_id")),
+              "venue_name": val(venue.get("name")),
+              "venue_city_name": val(venue.get("city_name")),
+              "venue_address": val(venue.get("address")),
+              "venue_capacity": val(venue.get("capacity")),
+              "arabic_name": "NOT_REQUESTED (no locale=ar by design)",
+          }
+
+          print("::group::SportMonks Team 148884 Diagnostic Result")
+          print(json.dumps(
+              {"summary": summary, "raw": data},
+              ensure_ascii=False,
+              indent=2,
+          ))
+          print("::endgroup::")
+          PYEOF
+
+      - name: Confirm scope and safety properties
+        run: |
+          echo "HTTP methods used: GET only, SportMonks API only"
+          echo "Locale used: none (English/default)"
+          echo "Webflow calls: 0"
+          echo "Webflow writes: 0"
+          echo "Webflow publishes: 0"
+          echo "sync.py imported: NO"
+          echo "Production sync invoked: NO"
+          echo "Scope: team id 148884 only"
