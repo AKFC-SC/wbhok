@@ -14,6 +14,16 @@ WF_TOKEN = os.environ["WEBFLOW_API_TOKEN"]
 
 TEAM_ID = 232744
 
+# Team CMS ("First Team Club Logos") — a REFERENCE-ONLY source of static
+# team data, keyed by sportsmonks-team-id. sync.py only READS it, and only
+# to fill the Fixtures home-team / away-team Reference fields. It never
+# creates, updates, or clears any Team CMS item.
+TEAM_COLLECTION_ID = "6a9c2ff98dd513bfc472db69"
+
+# Feature flag. While False the sync behaves exactly as before: Team CMS
+# is not read and home-team / away-team are never written.
+TEAM_REFERENCES_ENABLED = False
+
 COLLECTION_ID = "6a671465e31c8cf8983d3d36"
 
 # ============================================================
@@ -529,45 +539,77 @@ def print_webflow_fields(collection):
 # GET WEBFLOW ITEMS
 # ============================================================
 
-def wf_items(cms_locale_id=None):
+WF_PAGE_SIZE = 100
 
+
+def wf_items(cms_locale_id=None, collection_id=None):
+
+    # Reads EVERY page of the collection (Webflow caps a page at 100
+    # items). The first request is identical to the previous
+    # single-request behavior (no offset param); further pages are only
+    # requested when the collection holds more than one page of items.
     url = (
         f"{WF_BASE}/collections/"
-        f"{COLLECTION_ID}/items"
+        f"{collection_id or COLLECTION_ID}/items"
     )
 
-    params = {
-        "limit": 100,
-    }
+    items = []
 
-    if cms_locale_id:
+    offset = 0
 
-        params["cmsLocaleId"] = cms_locale_id
+    while True:
 
-    response = requests.get(
-        url,
-        headers=wf_headers(),
-        params=params,
-        timeout=30,
-    )
+        params = {
+            "limit": WF_PAGE_SIZE,
+        }
 
-    print(
-        "ITEMS STATUS:",
-        response.status_code
-    )
+        if offset:
 
-    if not response.ok:
+            params["offset"] = offset
 
-        print(
-            "ITEMS RESPONSE:",
-            response.text
+        if cms_locale_id:
+
+            params["cmsLocaleId"] = cms_locale_id
+
+        response = requests.get(
+            url,
+            headers=wf_headers(),
+            params=params,
+            timeout=30,
         )
 
-        response.raise_for_status()
+        print(
+            "ITEMS STATUS:",
+            response.status_code
+        )
 
-    data = response.json()
+        if not response.ok:
 
-    items = data.get("items") or []
+            print(
+                "ITEMS RESPONSE:",
+                response.text
+            )
+
+            response.raise_for_status()
+
+        data = response.json()
+
+        page = data.get("items") or []
+
+        items.extend(page)
+
+        offset += len(page)
+
+        total = (
+            data.get("pagination") or {}
+        ).get("total")
+
+        if (
+            not page
+            or len(page) < WF_PAGE_SIZE
+            or (total is not None and offset >= total)
+        ):
+            break
 
     print(
         "Existing Webflow items:",
@@ -729,6 +771,241 @@ def fixture_field_data(
             ] = tournament_logo
 
     return field_data
+
+
+# ============================================================
+# TEAM CMS — REFERENCE LOOKUP (READ-ONLY)
+#
+# Everything here is inert while TEAM_REFERENCES_ENABLED is False.
+# When enabled: Team CMS is read ONCE per run (all pages), a map
+# {sportsmonks-team-id -> Webflow team item id} is built, and each
+# fixture's SportMonks home/away team ids are looked up in it. Matching
+# is by sportsmonks-team-id ONLY — never by team name, never by any
+# translation. Team CMS is never written to, and a missing team never
+# creates an item or clears an existing Reference: a Reference key is
+# simply left out of the payload, and Webflow's partial-update semantics
+# keep whatever value is already stored.
+# ============================================================
+
+def build_team_map(items):
+
+    candidates = {}
+
+    excluded = 0
+
+    for item in items:
+
+        field_data = item.get("fieldData") or {}
+
+        team_id = safe_text(
+            field_data.get("sportsmonks-team-id")
+        ).strip()
+
+        if not team_id:
+            excluded += 1
+            continue
+
+        if (
+            item.get("isArchived")
+            or item.get("isDraft")
+            or not item.get("lastPublished")
+        ):
+            excluded += 1
+            continue
+
+        candidates.setdefault(team_id, []).append(item.get("id"))
+
+    team_map = {}
+
+    for team_id, item_ids in candidates.items():
+
+        if len(item_ids) > 1:
+
+            print(
+                "[TEAM] WARNING: duplicate sportsmonks-team-id",
+                team_id,
+                "in Team CMS — excluded from the map, no reference"
+                " will be written for it"
+            )
+
+            excluded += len(item_ids)
+
+            continue
+
+        team_map[team_id] = item_ids[0]
+
+    print(
+        "[TEAM] Team CMS items read:",
+        len(items),
+        "| usable:",
+        len(team_map),
+        "| excluded:",
+        excluded
+    )
+
+    return team_map
+
+
+def load_team_map():
+
+    if not TEAM_REFERENCES_ENABLED:
+
+        return {}
+
+    try:
+
+        items = wf_items(collection_id=TEAM_COLLECTION_ID)
+
+    except Exception as err:
+
+        print(
+            "[TEAM] WARNING: Team CMS read failed:",
+            err
+        )
+        print(
+            "[TEAM] English sync continues, no team references"
+            " written this run, existing references untouched"
+        )
+
+        return {}
+
+    return build_team_map(items)
+
+
+def team_reference_fields(fixture, team_map, stats=None):
+
+    refs = {}
+
+    if not team_map:
+
+        return refs
+
+    home, away = get_participants(fixture)
+
+    for key, participant in (
+        ("home-team", home),
+        ("away-team", away),
+    ):
+
+        team_id = safe_text(participant_id(participant))
+
+        team_item_id = team_map.get(team_id) if team_id else None
+
+        if team_item_id:
+
+            refs[key] = team_item_id
+
+            continue
+
+        print(
+            "[TEAM] WARNING: TEAM_MISSING",
+            key,
+            "sportsmonks-team-id =",
+            team_id or "(none)",
+            "| fixture",
+            safe_text(fixture.get("id")),
+            "| not in Team CMS — reference left as is"
+        )
+
+        if stats is not None:
+
+            stats["missing"].setdefault(
+                team_id or "(none)",
+                participant_name(participant)
+            )
+
+    if stats is not None:
+
+        stats["fixtures"] += 1
+
+        stats["linked"] += len(refs)
+
+    return refs
+
+
+# A Reference write can be rejected (400/404/422) without anything having
+# been created or changed; only those statuses are retried without the
+# references. Any other failure (including 5xx, where a create may have
+# partially succeeded) is raised exactly as before, so it can never lead
+# to a duplicate item.
+REFERENCE_RETRY_STATUSES = (400, 404, 422)
+
+
+def _reference_rejected(err):
+
+    response = getattr(err, "response", None)
+
+    return (
+        response is not None
+        and response.status_code in REFERENCE_RETRY_STATUSES
+    )
+
+
+def create_fixture_with_team_refs(field_data, team_refs):
+
+    if not team_refs:
+
+        return create_webflow_item(field_data)
+
+    payload = dict(field_data)
+
+    payload.update(team_refs)
+
+    try:
+
+        return create_webflow_item(payload)
+
+    except requests.exceptions.HTTPError as err:
+
+        if not _reference_rejected(err):
+            raise
+
+        print(
+            "[TEAM] WARNING: Webflow rejected the team references on"
+            " CREATE — creating the fixture without them"
+        )
+
+        return create_webflow_item(field_data)
+
+
+def update_fixture_with_team_refs(item_id, field_data, team_refs):
+
+    if not team_refs:
+
+        return update_webflow_item(item_id, field_data)
+
+    payload = dict(field_data)
+
+    payload.update(team_refs)
+
+    try:
+
+        return update_webflow_item(item_id, payload)
+
+    except requests.exceptions.HTTPError as err:
+
+        if not _reference_rejected(err):
+            raise
+
+        print(
+            "[TEAM] WARNING: Webflow rejected the team references on"
+            " UPDATE — updating the fixture without them"
+        )
+
+        return update_webflow_item(item_id, field_data)
+
+
+def print_team_reference_summary(stats):
+
+    print()
+    print("[TEAM] REFERENCE SUMMARY")
+    print("Fixtures processed:", stats["fixtures"])
+    print("References set:", stats["linked"])
+    print("Teams missing from Team CMS:", len(stats["missing"]))
+
+    for team_id, name in sorted(stats["missing"].items()):
+
+        print("  MISSING:", team_id, "|", name)
 
 
 # ============================================================
@@ -1361,6 +1638,13 @@ def sync_fixtures():
                 safe_text(fixture_id)
             ] = item
 
+    # Team CMS -> {sportsmonks-team-id: item id}. Empty (and Team CMS is
+    # not even read) unless TEAM_REFERENCES_ENABLED; empty as well if the
+    # read fails, in which case no reference is written this run.
+    team_map = load_team_map()
+
+    team_ref_stats = {"fixtures": 0, "linked": 0, "missing": {}}
+
     created = 0
     updated = 0
     skipped = 0
@@ -1417,9 +1701,16 @@ def sync_fixtures():
                 include_logos=False
             )
 
-            update_webflow_item(
+            team_refs = team_reference_fields(
+                fixture,
+                team_map,
+                team_ref_stats
+            )
+
+            update_fixture_with_team_refs(
                 existing["id"],
-                field_data
+                field_data,
+                team_refs
             )
 
             touched_item_ids.append(
@@ -1450,8 +1741,15 @@ def sync_fixtures():
                 include_logos=True
             )
 
-            new_item_id = create_webflow_item(
-                field_data
+            team_refs = team_reference_fields(
+                fixture,
+                team_map,
+                team_ref_stats
+            )
+
+            new_item_id = create_fixture_with_team_refs(
+                field_data,
+                team_refs
             )
 
             if new_item_id:
@@ -1465,6 +1763,10 @@ def sync_fixtures():
 
             created += 1
             changes_made = True
+
+    if TEAM_REFERENCES_ENABLED:
+
+        print_team_reference_summary(team_ref_stats)
 
     # --------------------------------------------------------
     # Summary
