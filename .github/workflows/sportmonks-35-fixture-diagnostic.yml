@@ -2,26 +2,21 @@ name: SportMonks 35-Fixture Diagnostic (TEMPORARY)
 
 # TEMPORARY, READ-ONLY DIAGNOSTIC WORKFLOW.
 #
-# Purpose: fetch SportMonks fixture data — ENGLISH ONLY, no locale=ar,
-# no Arabic endpoint call of any kind — for a FIXED, pre-verified list
-# of 35 fixture ids. This is deliberate per the newly adopted
-# architecture: Arabic team names/logos/city/stadium will come from a
-# Team CMS collection in Webflow (keyed by sportsmonks-team-id), never
-# from SportMonks' own Arabic translation. SportMonks here is only the
-# source of match/sporting data (score, status, date/time, league,
-# team ids). The 35 ids are the exact set confirmed via live Webflow
-# data (this session) to have: Primary item present, Primary NOT
-# archived, a real sportsmonks-id, and NO existing Arabic CMS variant.
+# Purpose: print a compact team-id mapping — ENGLISH ONLY, no locale=ar —
+# for a FIXED, pre-verified list of 35 fixture ids, one line per
+# fixture: fixture_id | home_team_id | home_team_name | away_team_id |
+# away_team_name. The ids are the linking keys; names are informational
+# only and are never used for matching. Arabic team names/logos/city/
+# stadium come from the Team CMS in Webflow (keyed by
+# sportsmonks-team-id), never from SportMonks' Arabic translation.
 #
 # This workflow does NOT import or call sync.py, does NOT reference
 # WEBFLOW_API_TOKEN (or any Webflow credential) anywhere, and makes
-# ZERO requests to the Webflow API. It never creates, updates, or
-# publishes anything. No translation dictionary of any kind is used,
-# and no matching by team name is performed here — the raw
-# home_team_id/away_team_id are the only linking keys this workflow
-# outputs; matching against a Team CMS by sportsmonks-team-id happens
-# elsewhere, later, read-only. It is manually triggered only — no
-# schedule, no push trigger. Intended to be deleted after use.
+# ZERO requests to the Webflow API. The only requests it makes are HTTP
+# GETs to the SportMonks API. It never creates, updates, or publishes
+# anything. No translation dictionary is used and no matching by team
+# name is performed. It is manually triggered only — no schedule, no
+# push trigger. Intended to be deleted after use.
 
 on:
   workflow_dispatch:
@@ -40,12 +35,11 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Fetch SportMonks fixtures (English only) for 35 fixed ids
+      - name: Print compact team mapping (English only) for 35 fixed ids
         env:
           SPORTSMONKS_API_TOKEN: ${{ secrets.SPORTSMONKS_API_TOKENS }}
         run: |
           python3 - <<'PYEOF'
-          import json
           import os
           import time
 
@@ -63,24 +57,26 @@ jobs:
           ]
 
           SM_BASE = "https://api.sportmonks.com/v3/football"
-          INCLUDE = "participants;venue;league;scores;state"
 
           token = os.environ["SPORTSMONKS_API_TOKEN"]
 
 
-          def fetch_english(fixture_id):
+          def fetch_mapping(fixture_id):
 
-              # No 'locale' param at all — English/default SportMonks
-              # response only. No Arabic endpoint is ever called.
-              params = {
-                  "api_token": token,
-                  "include": INCLUDE,
-              }
+              # No 'locale' param at all — English/default response only.
+              response = requests.get(
+                  f"{SM_BASE}/fixtures/{fixture_id}",
+                  params={
+                      "api_token": token,
+                      "include": "participants",
+                  },
+                  timeout=30,
+              )
 
-              url = f"{SM_BASE}/fixtures/{fixture_id}"
-
-              response = requests.get(url, params=params, timeout=30)
-              response.raise_for_status()
+              # Never print the request URL (it carries the token as a
+              # query parameter) — only the status code.
+              if not response.ok:
+                  raise RuntimeError(f"HTTP {response.status_code}")
 
               data = response.json().get("data") or {}
 
@@ -101,69 +97,41 @@ jobs:
                   None,
               )
 
-              scores = data.get("scores") or []
+              if not home or not away:
+                  raise RuntimeError("home/away participant missing")
 
-              def score_for(participant_id):
-                  for s in scores:
-                      if (
-                          s.get("participant_id") == participant_id
-                          and s.get("description") == "CURRENT"
-                      ):
-                          return (s.get("score") or {}).get("goals")
-                  return None
-
-              return {
-                  "fixture_id": data.get("id"),
-                  "fixture_name": data.get("name"),
-                  "starting_at": data.get("starting_at"),
-                  "state_name": (data.get("state") or {}).get("name"),
-                  "home_team_id": home.get("id") if home else None,
-                  "home_team_name": home.get("name") if home else None,
-                  "home_score": score_for(home.get("id")) if home else None,
-                  "away_team_id": away.get("id") if away else None,
-                  "away_team_name": away.get("name") if away else None,
-                  "away_score": score_for(away.get("id")) if away else None,
-                  "venue_id": (data.get("venue") or {}).get("id"),
-                  "venue_name": (data.get("venue") or {}).get("name"),
-                  "league_id": (data.get("league") or {}).get("id"),
-                  "league_name": (data.get("league") or {}).get("name"),
-              }
+              return (
+                  data.get("id"),
+                  home.get("id"),
+                  home.get("name"),
+                  away.get("id"),
+                  away.get("name"),
+              )
 
 
-          results = []
+          lines = []
           successful = 0
           failed = 0
 
           for fixture_id in FIXTURE_IDS:
 
               try:
-                  english = fetch_english(fixture_id)
-                  results.append({
-                      "fixture_id": fixture_id,
-                      "english": english,
-                  })
+                  fid, hid, hname, aid, aname = fetch_mapping(fixture_id)
+                  lines.append(f"{fid} | {hid} | {hname} | {aid} | {aname}")
                   successful += 1
 
               except Exception as err:
                   # Never guess: record the id and the real failure reason,
                   # then continue to the rest of the fixtures.
-                  results.append({
-                      "fixture_id": fixture_id,
-                      "error": str(err),
-                  })
+                  lines.append(f"{fixture_id} | ERROR: {err}")
                   failed += 1
 
               # Be polite to the API between fixtures.
               time.sleep(0.3)
 
-          output = {
-              "successful_fetches": successful,
-              "failed_fetches": failed,
-              "fixtures": results,
-          }
-
-          print("::group::SportMonks 35-Fixture Diagnostic Result (English only)")
-          print(json.dumps(output, ensure_ascii=False, indent=2))
+          print("::group::fixture_id | home_team_id | home_team_name | away_team_id | away_team_name")
+          for line in lines:
+              print(line)
           print("::endgroup::")
 
           print()
@@ -174,6 +142,7 @@ jobs:
       - name: Confirm scope and safety properties
         run: |
           echo "Locale used: English only (no locale=ar, no Arabic endpoint call)"
+          echo "HTTP methods used: GET only, SportMonks API only"
           echo "Webflow calls: 0"
           echo "Webflow writes: 0"
           echo "Webflow publishes: 0"
