@@ -1391,8 +1391,12 @@ def publish_arabic_fixture_items(item_ids):
 #     Team CMS item (same item id as the Primary team). Team CMS is only
 #     ever READ here — Arabic sync never creates a team, never edits one.
 #   - League: the fixed mapping below (unknown league -> field omitted).
-#   - Everything else (venue, date, time, status, scores, logos, slug):
-#     copied from the English side, exactly as the English pass writes it.
+#   - Venue: the fixed mapping below, keyed on the exact SportMonks venue
+#     string (unknown venue -> field omitted, never translated/guessed).
+#   - Time: the same value the English pass writes, with only the AM/PM
+#     marker localized (English formatting is completely untouched).
+#   - date-time, status, scores, logos, slug: copied from the English
+#     side, exactly as the English pass writes them — never localized.
 #
 # match-hub-link is deliberately never part of an Arabic payload.
 # ============================================================
@@ -1400,6 +1404,57 @@ def publish_arabic_fixture_items(item_ids):
 ARABIC_LEAGUE_NAMES = {
     "Pro League": "دوري روشن",
     "Kings Cup": "كأس الملك",
+}
+
+# Fixed, hand-maintained mapping, exactly like ARABIC_LEAGUE_NAMES. Keyed by
+# the EXACT venue string as it comes from SportMonks — byte-for-byte,
+# including whatever punctuation/spacing/casing SportMonks itself sends.
+# Never normalized and never fuzzy-matched: two differently-spelled
+# SportMonks strings may or may not be the same real venue, and deciding
+# that is a judgment call this script does not make.
+#
+# A venue with no entry here is NEVER translated or guessed: fixture_
+# field_data_arabic() simply omits the "venue" key, so on update the
+# existing Arabic value (including empty) is left exactly as it is, and a
+# WARNING naming the exact unmapped string is printed every time.
+#
+# Every entry below was supplied and approved by the user — sourced from
+# the Saudi Pro League's own bilingual team pages (spl.com.sa/en/teams,
+# spl.com.sa/ar/teams) where verifiable, and explicitly approved by the
+# user for the remainder. Nothing here was guessed or machine-translated.
+ARABIC_VENUE_NAMES = {
+    # Previously verified SPL mappings
+    "Al Hazem Club Stadium": "استاد نادي الحزم",
+    "Al Hazem Club Stadium, Ar Rass": "استاد نادي الحزم",
+    "Ar-Rass Stadium": "استاد نادي الحزم",
+    "Ar-Rass Stadium ": "استاد نادي الحزم",
+    "Ar-Rass Stadium (Al Hazm Club Stadium) (Ar-Rass (Rass))": "استاد نادي الحزم",
+    "Alinma Stadium": "ملعب الإنماء",
+    "Kingdom Arena": "المملكة أرينا",
+    "Al-Awwal Park": "ملعب الأول بارك",
+    "Prince Mohammed Bin Fahd Stadium": "استاد الأمير محمد بن فهد",
+    "Prince Faisal bin Fahd Stadium": "استاد الأمير فيصل بن فهد الرياضية",
+    "Al Majma'ah Sports City Stadium (Al Majma'ah)": "مدينة المجمعة الرياضية",
+    "Al Majma'a Sport City Stadium, Al Majma'ah": "مدينة المجمعة الرياضية",
+    "Al-Ettifaq Club STADIUM": "ملعب نادي الاتفاق",
+    "King Khalid Sport City Stadium": "مدينة الملك خالد الرياضية",
+    "Maydan Tamweel Al Oula, Al Ahsa": "ميدان تمويل الأولى",
+
+    # User-approved mappings
+    "Al Fateh Club Stadium": "ميدان تمويل الاولى",
+    "Al Shabab Club Stadium": "اس اتش جي",
+    "Al-Shabab Club Stadium (Riyadh)": "اس اتش جي",
+    "King Abdullah Sports City, Buraydah": "مدينة الملك عبدالله الرياضية (بريدة)",
+    "King Abdullah Sport City": "مدينة الملك عبدالله الرياضية (بريدة)",
+    "King Abdullah Sport City Stadium": "مدينة الملك عبدالله الرياضية (بريدة)",
+    "King Abdullah Sports City": "مدينة الملك عبدالله الرياضية (بريدة)",
+    "Al-Bukiryah Club Stadium": "ملعب نادي البكيرية",
+    "Damac Club Stadium, Khamis Mushait": "ملعب نادي ضمك",
+    "Dhamak Club Stadium": "ملعب نادي ضمك",
+    "EGO STADIUM": "ملعب ايجو",
+    "Prince Hathloul Bin Abdulaziz Sport City, Najran": "مدينة الأمير هذلول بن عبدالعزيز الرياضية",
+    "Prince Nayef bin Abdul Aziz Sports City Stadium": "مدينة الأمير نايف بن عبدالعزيز الرياضية",
+    "Prince Saud bin Jalawi Stadium": "مدينة الأمير سعود بن جلوي الرياضية",
 }
 
 ARABIC_TECHNICAL_FIELDS = (
@@ -1435,6 +1490,25 @@ ARABIC_UPDATE_FIELDS = frozenset(
 ARABIC_CREATE_FIELDS = ARABIC_UPDATE_FIELDS | frozenset(
     ("slug", "sportsmonks-id") + ARABIC_LOGO_FIELDS
 )
+
+
+# English time-3 values are always "<H>:<MM> AM" / "<H>:<MM> PM" (from
+# fixture_time()'s own "%I:%M %p" formatting) — this only ever localizes
+# that fixed AM/PM marker (never touches the digits, the colon, or the
+# spacing) and passes anything else through completely unchanged rather
+# than guessing at an unrecognized format.
+def arabic_time(en_time):
+
+    if not en_time:
+        return en_time
+
+    if en_time.endswith(" AM"):
+        return en_time[:-3] + " ص"
+
+    if en_time.endswith(" PM"):
+        return en_time[:-3] + " م"
+
+    return en_time
 
 
 def assert_arabic_payload(field_data, allowed):
@@ -1549,11 +1623,46 @@ def fixture_field_data_arabic(fixture_en, arabic_index):
 
     base = fixture_field_data(fixture_en, include_logos=False)
 
+    # date-time, status and the scores are copied verbatim — never
+    # localized. venue and time-3 get their own handling right below,
+    # never a blind copy of the English value.
     field_data = {
-        key: base[key] for key in ARABIC_TECHNICAL_FIELDS
+        key: base[key]
+        for key in ARABIC_TECHNICAL_FIELDS
+        if key not in ("venue", "time-3")
     }
 
     log_lines = []
+
+    field_data["time-3"] = arabic_time(base["time-3"])
+
+    venue_en = base["venue"]
+
+    if venue_en:
+
+        venue_ar = ARABIC_VENUE_NAMES.get(venue_en)
+
+        if venue_ar:
+
+            field_data["venue"] = venue_ar
+
+            log_lines.append(("venue", "MAPPED"))
+
+        else:
+
+            print(
+                "[AR] WARNING: no Arabic venue mapping for",
+                repr(venue_en),
+                "— Arabic venue left unchanged"
+            )
+
+            log_lines.append(
+                ("venue", "UNMAPPED (" + venue_en + ")")
+            )
+
+    else:
+
+        log_lines.append(("venue", "EMPTY"))
 
     home, away = get_participants(fixture_en)
 

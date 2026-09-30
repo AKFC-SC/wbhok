@@ -140,10 +140,11 @@ TEAMS_AR = [
 ]
 
 
-def sm_fixture(fid, home, away, league="Pro League", state="Not Started", venue="Ar-Rass Stadium"):
+def sm_fixture(fid, home, away, league="Pro League", state="Not Started", venue="",
+               starting_at="2027-02-01 16:00:00"):
     return {
         "id": fid,
-        "starting_at": "2027-02-01 16:00:00",
+        "starting_at": starting_at,
         "state": {"name": state},
         "scores": [],
         "venue": {"name": venue},
@@ -216,9 +217,10 @@ check("create: Arabic names and title from Arabic Team CMS",
       and fd["name"] == "الخلود ضد الشباب")
 check("create: references are the Arabic-variant item ids", fd["home-team"] == "T-KH" and fd["away-team"] == "T-SH")
 check("create: league Pro League -> دوري روشن", fd["league"] == "دوري روشن")
-check("create: primary slug, sportsmonks-id, venue, status copied from EN",
+check("create: primary slug, sportsmonks-id, status copied from EN",
       fd["slug"] == "fixture-1001" and fd["sportsmonks-id"] == "1001"
-      and fd["venue"] == "Ar-Rass Stadium" and fd["status"] == "Not Started")
+      and fd["status"] == "Not Started")
+check("create: time-3 AM/PM localized (PM -> م), digits/colon untouched", fd["time-3"] == "07:00 م")
 check("create: logos copied from the primary item", all(fd.get(k) == LOGOS[k] for k in LOGOS))
 check("create: no match-hub-link", "match-hub-link" not in fd)
 check("create: payload inside the allow-list", set(fd) <= set(sync.ARABIC_CREATE_FIELDS))
@@ -281,7 +283,7 @@ f6 = sm_fixture(1006, KH, SH, state="Full Time")
 existing = ar_row("E6", 1006, **{"name": "الخلود ضد الشباب", "home-team-name": "الخلود",
                                  "away-team-name": "الشباب", "league": "دوري روشن",
                                  "status": "Not Started", "venue": "Ar-Rass Stadium",
-                                 "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 PM"})
+                                 "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 م"})
 t = fresh([en_row("E6", 1006)], [existing])
 run(t, [f6])
 w = t.arabic_writes()
@@ -297,7 +299,7 @@ f7 = sm_fixture(1007, KH, SH)
 same = ar_row("E7", 1007, **{"name": "الخلود ضد الشباب", "home-team-name": "الخلود",
                              "away-team-name": "الشباب", "league": "دوري روشن",
                              "status": "Not Started", "venue": "Ar-Rass Stadium",
-                             "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 PM",
+                             "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 م",
                              "home-team-score": None, "away-team-score": None})
 t = fresh([en_row("E7", 1007)], [same])
 out = run(t, [f7])
@@ -412,7 +414,7 @@ def live_ar(item_id, fid, **fd):
     row = ar_row(item_id, fid, **{"name": "الخلود ضد الشباب", "home-team-name": "الخلود",
                                   "away-team-name": "الشباب", "league": "دوري روشن",
                                   "status": "Not Started", "venue": "Ar-Rass Stadium",
-                                  "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 PM", **fd})
+                                  "date-time": "2027-02-01T16:00:00.000Z", "time-3": "07:00 م", **fd})
     row["isDraft"] = False
     return row
 
@@ -498,6 +500,130 @@ t = fresh([en_row("E30", 300)], [after])
 run(t, [CHANGED])
 check("publish: second run with no change -> no Arabic write, no publish",
       t.arabic_patches() == [] and arabic_publishes(t) == [])
+
+# ============================================================ 10. VENUE MAPPING & TIME LOCALIZATION
+# The 29 distinct venue strings actually present in the live Fixtures data
+# (pulled read-only from Webflow) — the definitive, real-data-only list the
+# mapping must cover. Every one of these must be MAPPED, never UNMAPPED.
+LIVE_VENUES = [
+    "Al Fateh Club Stadium", "Al Hazem Club Stadium", "Al Hazem Club Stadium, Ar Rass",
+    "Al Majma'ah Sports City Stadium (Al Majma'ah)", "Al Majma'a Sport City Stadium, Al Majma'ah",
+    "Al Shabab Club Stadium", "Al-Awwal Park", "Al-Bukiryah Club Stadium",
+    "Al-Ettifaq Club STADIUM", "Al-Shabab Club Stadium (Riyadh)", "Alinma Stadium",
+    "Ar-Rass Stadium", "Ar-Rass Stadium ",
+    "Ar-Rass Stadium (Al Hazm Club Stadium) (Ar-Rass (Rass))",
+    "Damac Club Stadium, Khamis Mushait", "Dhamak Club Stadium", "EGO STADIUM",
+    "King Abdullah Sport City", "King Abdullah Sport City Stadium",
+    "King Abdullah Sports City", "King Abdullah Sports City, Buraydah",
+    "King Khalid Sport City Stadium", "Kingdom Arena", "Maydan Tamweel Al Oula, Al Ahsa",
+    "Prince Faisal bin Fahd Stadium", "Prince Hathloul Bin Abdulaziz Sport City, Najran",
+    "Prince Mohammed Bin Fahd Stadium", "Prince Nayef bin Abdul Aziz Sports City Stadium",
+    "Prince Saud bin Jalawi Stadium",
+]
+
+check("all 29 live venue strings have an entry (0 unmapped)",
+      len(LIVE_VENUES) == 29 and all(v in sync.ARABIC_VENUE_NAMES for v in LIVE_VENUES))
+check("ARABIC_VENUE_NAMES has exactly 29 entries, nothing extra/guessed",
+      len(sync.ARABIC_VENUE_NAMES) == 29 and set(sync.ARABIC_VENUE_NAMES) == set(LIVE_VENUES))
+
+# Every one of the 29 real venues actually produces the approved Arabic
+# value end-to-end (through sync_fixtures_arabic, not just a dict lookup),
+# logs MAPPED (never UNMAPPED), and no unmapped-venue warning is printed.
+_unmapped_seen = []
+for i, venue in enumerate(LIVE_VENUES):
+    t = fresh([en_row(f"V{i}", 2000 + i)], [])
+    out = run(t, [sm_fixture(2000 + i, KH, SH, venue=venue)])
+    fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+    if fd.get("venue") != sync.ARABIC_VENUE_NAMES[venue] or "no Arabic venue mapping" in out:
+        _unmapped_seen.append(venue)
+check("every live venue: create payload carries the exact approved Arabic value, no warning",
+      _unmapped_seen == [])
+
+# Spot-check a few exact approved values (verbatim, not re-derived)
+t = fresh([en_row("E60", 600)], [])
+run(t, [sm_fixture(600, KH, SH, venue="Ar-Rass Stadium")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("Ar-Rass Stadium -> استاد نادي الحزم (Al Hazm's own ground, per SPL)", fd["venue"] == "استاد نادي الحزم")
+
+t = fresh([en_row("E60b", 6001)], [])
+run(t, [sm_fixture(6001, KH, SH, venue="Kingdom Arena")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("Kingdom Arena -> المملكة أرينا (verbatim, no wording changed)", fd["venue"] == "المملكة أرينا")
+
+t = fresh([en_row("E60c", 6002)], [])
+run(t, [sm_fixture(6002, KH, SH, venue="King Abdullah Sport City")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("King Abdullah Sport City -> مدينة الملك عبدالله الرياضية (بريدة) (verbatim)",
+      fd["venue"] == "مدينة الملك عبدالله الرياضية (بريدة)")
+
+# Unknown / not-in-list venue (genuinely absent from Fixtures data): still
+# never invented, still warned, still omitted — the mechanism still works
+# for whatever isn't in the 29.
+t = fresh([en_row("E61", 601)], [])
+out = run(t, [sm_fixture(601, KH, SH, venue="Some New Ground Not In Fixtures")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("still-unknown venue: no invented translation, field omitted from create", "venue" not in fd)
+check("still-unknown venue: a clear warning names the exact venue string",
+      "no Arabic venue mapping" in out and "Some New Ground Not In Fixtures" in out)
+
+# Unknown venue on UPDATE: existing Arabic venue value is left exactly as it is
+existing_venue = live_ar("E62", 602, **{"venue": "قيمة عربية قديمة"})
+t = fresh([en_row("E62", 602)], [existing_venue])
+out = run(t, [sm_fixture(602, KH, SH, venue="Some New Ground Not In Fixtures", state="Full Time")])
+w = t.arabic_writes()
+check("unknown venue on update: 'venue' is never part of the PATCH", "venue" not in w[0][2]["fieldData"])
+
+# A mapped venue on UPDATE: PATCH carries the approved Arabic value
+existing_mapped = live_ar("E62b", 6021, **{"venue": "قيمة عربية قديمة"})
+t = fresh([en_row("E62b", 6021)], [existing_mapped])
+run(t, [sm_fixture(6021, KH, SH, venue="Alinma Stadium", state="Full Time")])
+w = t.arabic_writes()
+check("mapped venue on update: PATCH sets the approved Arabic value",
+      w[0][2]["fieldData"].get("venue") == "ملعب الإنماء")
+
+# English Fixture venue itself is never translated/converted by the Arabic pass
+t = fresh([en_row("E63", 603, venue="Ar-Rass Stadium")], [])
+run(t, [sm_fixture(603, KH, SH, venue="Ar-Rass Stadium", starting_at="2027-02-01 16:00:00")])
+en_patches = [c for c in t.calls if c[0] == "PATCH" and not (c[3] or {}).get("cmsLocaleId")]
+check("English Fixture venue stays the raw SportMonks string, never mapped to Arabic",
+      en_patches[0][3]["fieldData"]["venue"] == "Ar-Rass Stadium")
+check("English Fixture time-3 keeps plain AM/PM, never localized",
+      en_patches[0][3]["fieldData"]["time-3"] == "07:00 PM")
+
+# Arabic AM -> ص (07:00 AM UTC-based fixture: 04:00 UTC -> 07:00 Riyadh -> AM)
+t = fresh([en_row("E64", 604)], [])
+run(t, [sm_fixture(604, KH, SH, starting_at="2027-02-01 04:00:00")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("Arabic AM -> ص", fd["time-3"] == "07:00 ص")
+
+# Arabic PM -> م (already covered by the create test above; repeated explicitly here)
+t = fresh([en_row("E65", 605)], [])
+run(t, [sm_fixture(605, KH, SH, starting_at="2027-02-01 16:00:00")])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("Arabic PM -> م", fd["time-3"] == "07:00 م")
+
+# English time-3 formatting is completely untouched by the Arabic AM/PM mapping
+check("English time-3 still uses plain AM/PM (formatting untouched)",
+      sync.arabic_time("07:00 AM") == "07:00 ص" and sync.arabic_time("07:00 PM") == "07:00 م"
+      and sync.fixture_time(sm_fixture(1, KH, SH, starting_at="2027-02-01 16:00:00")) == "07:00 PM")
+
+# Only digits/colon preserved exactly, only the AM/PM marker changes
+check("arabic_time preserves the digits and colon exactly",
+      sync.arabic_time("11:45 AM") == "11:45 ص" and sync.arabic_time("12:00 PM") == "12:00 م")
+check("arabic_time passes through empty / unrecognized formats unchanged (never guesses)",
+      sync.arabic_time("") == "" and sync.arabic_time(None) is None
+      and sync.arabic_time("07:00") == "07:00")
+
+# date-time (the DateTime field) is completely untouched by any of this
+t = fresh([en_row("E66", 606)], [])
+run(t, [sm_fixture(606, KH, SH)])
+fd = t.arabic_writes()[0][2]["items"][0]["fieldData"]
+check("date-time unchanged: still the raw ISO value from the English pass", fd["date-time"] == "2027-02-01T16:00:00.000Z")
+
+# No unrelated field is affected by the venue/time changes
+check("venue/time changes don't touch team refs, league, or logos in the create payload",
+      fd["home-team"] == "T-KH" and fd["away-team"] == "T-SH" and fd["league"] == "دوري روشن"
+      and all(fd.get(k) == LOGOS[k] for k in LOGOS))
 
 # ============================================================ 8. DIRECT GUARDS
 try:
