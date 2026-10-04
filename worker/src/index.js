@@ -14,6 +14,8 @@
 import { mapSportMonksToMatchHub } from './mapper.js';
 import { mapStandings } from './standingsMapper.js';
 import { mapFixtureCore, mapH2H, mapLastFive } from './previewMapper.js';
+import { getTeamArabicNameMap } from './webflowTeams.js';
+import { applyArabicTeamNames, applyArabicTeamNamesToPreview } from './arabicTeamNames.js';
 
 // Confirmed working combined include string (2026-08-26) — see mapper.js header.
 const INCLUDE =
@@ -51,7 +53,7 @@ function corsHeaders(request, env){
   return headers;
 }
 
-async function handleMatch(sportmonksId, env, headers){
+async function handleMatch(sportmonksId, env, headers, locale){
   if(!/^\d+$/.test(sportmonksId)){
     return new Response(JSON.stringify({ error: 'Invalid fixture id' }), { status: 400, headers });
   }
@@ -80,6 +82,11 @@ async function handleMatch(sportmonksId, env, headers){
     shaped = mapSportMonksToMatchHub(json.data);
   } catch (err) {
     return new Response(JSON.stringify({ error: 'Failed to map fixture data' }), { status: 500, headers });
+  }
+
+  if(locale === 'ar'){
+    var teamMapResult = await getTeamArabicNameMap(env);
+    applyArabicTeamNames(shaped, teamMapResult.map);
   }
 
   return new Response(JSON.stringify(shaped), { status: 200, headers });
@@ -141,7 +148,7 @@ async function fetchH2H(homeId, awayId, env){
   }
 }
 
-async function handlePreview(sportmonksId, env, headers){
+async function handlePreview(sportmonksId, env, headers, locale){
   if(!/^\d+$/.test(sportmonksId)){
     return new Response(JSON.stringify({ error: 'Invalid fixture id' }), { status: 400, headers });
   }
@@ -176,6 +183,11 @@ async function handlePreview(sportmonksId, env, headers){
     core.home.id ? fetchLastFiveForTeam(core.home.id, sportmonksId, env) : [],
     core.away.id ? fetchLastFiveForTeam(core.away.id, sportmonksId, env) : []
   ]);
+
+  if(locale === 'ar'){
+    var teamMapResult = await getTeamArabicNameMap(env);
+    applyArabicTeamNamesToPreview(core, h2h, homeForm, awayForm, teamMapResult.map);
+  }
 
   return new Response(JSON.stringify({
     home: core.home,
@@ -266,15 +278,20 @@ export default {
     }
 
     const url = new URL(request.url);
+    // Only the literal value "ar" switches on Arabic team-name resolution —
+    // anything else (absent, "en", a typo) behaves exactly as before, so
+    // existing English callers are completely unaffected by this param's
+    // existence. Same paths as before; only a new optional query param.
+    const locale = url.searchParams.get('locale') === 'ar' ? 'ar' : null;
 
     const previewRoute = url.pathname.match(/^\/api\/match\/([^/]+)\/preview\/?$/);
     if(previewRoute){
-      return handlePreview(previewRoute[1], env, headers);
+      return handlePreview(previewRoute[1], env, headers, locale);
     }
 
     const matchRoute = url.pathname.match(/^\/api\/match\/([^/]+)\/?$/);
     if(matchRoute){
-      return handleMatch(matchRoute[1], env, headers);
+      return handleMatch(matchRoute[1], env, headers, locale);
     }
 
     if(url.pathname.replace(/\/$/, '') === '/api/standings'){

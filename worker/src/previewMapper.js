@@ -95,8 +95,10 @@ function mapH2H(h2hFixtures, homeId, awayId){
       date: formatDate(fx.starting_at),
       competition: fx.league ? fx.league.name : '',
       homeTeam: fxHome ? fxHome.name : '',
+      homeTeamId: fxHome ? fxHome.id : null,
       homeLogo: fxHome ? (fxHome.image_path || null) : null,
       awayTeam: fxAway ? fxAway.name : '',
+      awayTeamId: fxAway ? fxAway.id : null,
       awayLogo: fxAway ? (fxAway.image_path || null) : null,
       homeScore: fxHome ? scoreFor(scores, fxHome.id) : null,
       awayScore: fxAway ? scoreFor(scores, fxAway.id) : null,
@@ -120,7 +122,7 @@ function mapH2H(h2hFixtures, homeId, awayId){
   return {
     summary: { homeWins: homeWins, draws: draws, awayWins: awayWins },
     meetings: meetings.map(function(m){
-      return { date: m.date, competition: m.competition, homeTeam: m.homeTeam, homeLogo: m.homeLogo, homeScore: m.homeScore, awayTeam: m.awayTeam, awayLogo: m.awayLogo, awayScore: m.awayScore };
+      return { date: m.date, competition: m.competition, homeTeam: m.homeTeam, homeTeamId: m.homeTeamId, homeLogo: m.homeLogo, homeScore: m.homeScore, awayTeam: m.awayTeam, awayTeamId: m.awayTeamId, awayLogo: m.awayLogo, awayScore: m.awayScore };
     })
   };
 }
@@ -144,6 +146,7 @@ function mapLastFive(fixturesInWindow, teamId, excludeFixtureId){
       var result = selfScore > oppScore ? 'W' : (selfScore < oppScore ? 'L' : 'D');
       return {
         opponent: opponent.name,
+        opponentId: opponent.id,
         opponentLogo: opponent.image_path || null,
         isHome: isHome,
         result: result,
@@ -159,7 +162,7 @@ function mapLastFive(fixturesInWindow, teamId, excludeFixtureId){
     .slice(0, 5);
 
   return completed.map(function(m){
-    return { opponent: m.opponent, opponentLogo: m.opponentLogo, isHome: m.isHome, result: m.result, selfScore: m.selfScore, opponentScore: m.opponentScore, competition: m.competition, date: m.date };
+    return { opponent: m.opponent, opponentId: m.opponentId, opponentLogo: m.opponentLogo, isHome: m.isHome, result: m.result, selfScore: m.selfScore, opponentScore: m.opponentScore, competition: m.competition, date: m.date };
   });
 }
 

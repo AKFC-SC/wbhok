@@ -250,11 +250,13 @@ function mapSportMonksToMatchHub(fixture){
 
   return {
     home: {
+      id: home ? home.id : null,
       name: home ? home.name : '',
       logo: home ? home.image_path : '',
       score: scoreFor(scores, home && home.id)
     },
     away: {
+      id: away ? away.id : null,
       name: away ? away.name : '',
       logo: away ? away.image_path : '',
       score: scoreFor(scores, away && away.id)
