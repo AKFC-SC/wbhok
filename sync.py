@@ -41,6 +41,16 @@ PRIMARY_CMS_LOCALE_ID = "6a671465e31c8cf8983d3d0c"
 ARABIC_SYNC_ENABLED = True
 ARABIC_SYNC_DRY_RUN = False
 
+# Arabic AUTO-PUBLISH gate. OFF by default and in the scheduled workflow.
+# Publishing an Arabic row publishes that row's whole staged state, which
+# includes manual Arabic edits (SEO, links, slug, ...) that have not been
+# approved yet — so the scheduled sync keeps WRITING Arabic data but leaves
+# it staged. Only the exact value "true" in the ARABIC_AUTO_PUBLISH
+# environment variable re-enables the publish step; nothing else does.
+ARABIC_AUTO_PUBLISH_ENABLED = (
+    os.environ.get("ARABIC_AUTO_PUBLISH", "").strip().lower() == "true"
+)
+
 # How many days before "today" the SportMonks fixture query also covers, so a
 # match that finished right before UTC midnight can still receive a late
 # status/score correction on the next run(s) instead of falling out of range
@@ -1797,6 +1807,7 @@ def sync_fixtures_arabic(
         "published": 0,
         "skipped_publish_draft": 0,
         "skipped_publish_incomplete": 0,
+        "skipped_publish_disabled": 0,
         "publish_errors": 0,
         "api_errors": 0,
     }
@@ -2062,6 +2073,8 @@ def sync_fixtures_arabic(
             publish_state = "incomplete"
         elif arabic_item.get("isDraft"):
             publish_state = "draft"
+        elif not ARABIC_AUTO_PUBLISH_ENABLED:
+            publish_state = "disabled"
         else:
             publish_state = "ok"
 
@@ -2074,6 +2087,8 @@ def sync_fixtures_arabic(
             if publish_state == "ok":
                 print("[AR] Publish: DRY-RUN (would publish Arabic)")
                 stats["would_publish"] += 1
+            elif publish_state == "disabled":
+                print("[AR] Publish: DISABLED (Arabic auto-publish is off)")
 
             continue
 
@@ -2094,6 +2109,12 @@ def sync_fixtures_arabic(
             elif publish_state == "draft":
                 print("[AR] Publish: SKIPPED (Arabic row is a draft)")
                 stats["skipped_publish_draft"] += 1
+            elif publish_state == "disabled":
+                print(
+                    "[AR] Publish: SKIPPED (Arabic auto-publish is off — "
+                    "update stays staged until explicitly published)"
+                )
+                stats["skipped_publish_disabled"] += 1
             else:
                 print("[AR] Publish: SKIPPED (Arabic data incomplete)")
                 stats["skipped_publish_incomplete"] += 1

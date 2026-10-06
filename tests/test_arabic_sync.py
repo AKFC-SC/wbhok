@@ -421,6 +421,63 @@ def live_ar(item_id, fid, **fd):
 
 CHANGED = sm_fixture(300, KH, SH, state="Full Time")
 
+# ---- 9a. DEFAULT: Arabic auto-publish is OFF -------------------------------
+# The scheduled workflow sets no ARABIC_AUTO_PUBLISH, so the default must keep
+# Arabic data synchronizing while never publishing it.
+check("default: Arabic auto-publish flag is OFF", sync.ARABIC_AUTO_PUBLISH_ENABLED is False)
+
+t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
+out = run(t, [CHANGED])
+check("auto-publish off: Arabic data is STILL updated (PATCH to the Arabic locale)",
+      len(t.arabic_patches()) == 1)
+check("auto-publish off: NO Arabic publish call at all", arabic_publishes(t) == [])
+check("auto-publish off: skip is logged", "Arabic auto-publish is off" in out)
+check("auto-publish off: English sync + English publish unaffected",
+      len(english_publishes(t)) == 1 and all(set(c[3]) == {"itemIds"} for c in english_publishes(t)))
+check("auto-publish off: no publish call of ANY shape carries a locale id",
+      not any("cmsLocaleIds" in str(c[3]) for c in t.calls
+              if c[0] == "POST" and c[1].endswith("/items/publish")))
+
+# several changed rows -> still nothing published
+t = fresh([en_row("E30", 300), en_row("E32", 302)], [live_ar("E30", 300), live_ar("E32", 302)])
+run(t, [CHANGED, sm_fixture(302, KH, SH, state="Full Time")])
+check("auto-publish off: multiple updated rows -> several PATCHes, zero Arabic publishes",
+      len(t.arabic_patches()) == 2 and arabic_publishes(t) == [])
+
+# dry run with the gate off reports it as disabled, not as 'would publish'
+t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
+out = run(t, [CHANGED], dry=True)
+check("auto-publish off + dry run: no write, reported as disabled",
+      t.arabic_writes() == [] and "Arabic auto-publish is off" in out and "would publish Arabic" not in out)
+
+# the env var is the only switch, and only the exact value "true" opens it
+import importlib  # noqa: E402
+def flag_with(value):
+    saved = os.environ.get("ARABIC_AUTO_PUBLISH")
+    if value is None:
+        os.environ.pop("ARABIC_AUTO_PUBLISH", None)
+    else:
+        os.environ["ARABIC_AUTO_PUBLISH"] = value
+    try:
+        return importlib.reload(sync).ARABIC_AUTO_PUBLISH_ENABLED
+    finally:
+        if saved is None:
+            os.environ.pop("ARABIC_AUTO_PUBLISH", None)
+        else:
+            os.environ["ARABIC_AUTO_PUBLISH"] = saved
+        importlib.reload(sync)
+check("flag: unset -> OFF", flag_with(None) is False)
+check("flag: empty / false / 0 / 1 / yes -> OFF",
+      all(flag_with(v) is False for v in ("", "false", "0", "1", "yes", "enabled")))
+check("flag: exact 'true' (any case) -> ON", flag_with("true") is True and flag_with("TRUE") is True)
+check("flag: default restored after env checks", sync.ARABIC_AUTO_PUBLISH_ENABLED is False)
+
+# ---- 9b. EXPLICIT OPT-IN: the original publish behaviour, unchanged ---------
+# Everything below is the pre-existing publish contract; it is exercised with
+# the gate explicitly opened (what ARABIC_AUTO_PUBLISH=true does), and the gate
+# is closed again before the next section.
+sync.ARABIC_AUTO_PUBLISH_ENABLED = True
+
 # changed + complete + not draft -> PATCH first, then one Arabic-only publish of that item
 t = fresh([en_row("E30", 300)], [live_ar("E30", 300)])
 run(t, [CHANGED])
@@ -500,6 +557,8 @@ t = fresh([en_row("E30", 300)], [after])
 run(t, [CHANGED])
 check("publish: second run with no change -> no Arabic write, no publish",
       t.arabic_patches() == [] and arabic_publishes(t) == [])
+
+sync.ARABIC_AUTO_PUBLISH_ENABLED = False   # close the gate again (production default)
 
 # ============================================================ 10. VENUE MAPPING & TIME LOCALIZATION
 # The 29 distinct venue strings actually present in the live Fixtures data
