@@ -26,15 +26,17 @@ const CACHE_KEY_URL = 'https://internal-cache.akfc.worker/team-arabic-name-map';
 // Cache API lookup below is the cross-isolate fallback.
 var memoryCache = null; // { map, fetchedAt }
 
-async function fetchAllTeamItems(env){
+async function fetchAllTeamItems(env, collectionId, cmsLocaleId){
+  collectionId = collectionId || TEAM_COLLECTION_ID;
   var items = [];
   var offset = 0;
   var limit = 100;
   var total = Infinity;
 
   while(items.length < total){
-    var url = 'https://api.webflow.com/v2/collections/' + TEAM_COLLECTION_ID
-      + '/items?limit=' + limit + '&offset=' + offset;
+    var url = 'https://api.webflow.com/v2/collections/' + collectionId
+      + '/items?limit=' + limit + '&offset=' + offset
+      + (cmsLocaleId ? '&cmsLocaleId=' + cmsLocaleId : '');
     var res = await fetch(url, {
       headers: {
         'Authorization': 'Bearer ' + env.WEBFLOW_API_TOKEN,
@@ -139,7 +141,84 @@ function arabicTeamName(teamId, map, fallbackName){
   return name || fallbackName;
 }
 
+// ---------------------------------------------------------------------------
+// U21 teams. The "U21 Club Logos" collection is the U21 Team CMS (same role as
+// First Team Club Logos). It has no name-arabic field and its Primary items
+// must stay untouched, so the club-supplied Arabic name lives in the `name` of
+// each item's ARABIC-locale variant. Same mechanism otherwise: keyed by
+// sportsmonks-team-id, cached for an hour, safe fallbacks, never a guess.
+// SportMonks U21 team ids (28xxxx) never collide with First Team ids, so the
+// two maps can be merged for a standings request.
+// ---------------------------------------------------------------------------
+
+const U21_TEAM_COLLECTION_ID = '6a9c273b2ce0ff1e94791189';
+const ARABIC_CMS_LOCALE_ID = '6a671465e31c8cf8983d3d0d';
+const U21_CACHE_KEY_URL = 'https://internal-cache.akfc.worker/u21-team-arabic-name-map';
+const ARABIC_SCRIPT = /[\u0600-\u06FF]/;
+var u21MemoryCache = null;
+
+// Only rows that really are Arabic-locale variants AND whose name is written
+// in Arabic script are used — an English name can never leak in as "Arabic".
+function buildU21TeamMap(items){
+  var map = {};
+  (items || []).forEach(function(item){
+    if(!item || item.cmsLocaleId !== ARABIC_CMS_LOCALE_ID || item.isArchived) return;
+    var fieldData = item.fieldData || {};
+    var teamId = fieldData['sportsmonks-team-id'];
+    var arabicName = fieldData['name'];
+    if(!teamId || !arabicName || !ARABIC_SCRIPT.test(arabicName)) return;
+    map[String(teamId)] = arabicName;
+  });
+  return map;
+}
+
+async function getU21TeamArabicNameMap(env){
+  var now = Date.now();
+
+  if(u21MemoryCache && (now - u21MemoryCache.fetchedAt) < TEAM_MAP_TTL_MS){
+    return { map: u21MemoryCache.map, error: null };
+  }
+
+  try {
+    var cachedRes = await caches.default.match(U21_CACHE_KEY_URL);
+    if(cachedRes){
+      var cachedJson = await cachedRes.json();
+      if(cachedJson && typeof cachedJson.fetchedAt === 'number' && (now - cachedJson.fetchedAt) < TEAM_MAP_TTL_MS){
+        u21MemoryCache = { map: cachedJson.map, fetchedAt: cachedJson.fetchedAt };
+        return { map: cachedJson.map, error: null };
+      }
+    }
+  } catch (err) {
+    // Cache API unavailable or malformed entry — fall through to a live fetch.
+  }
+
+  if(!env.WEBFLOW_API_TOKEN){
+    return { map: u21MemoryCache ? u21MemoryCache.map : null, error: 'WEBFLOW_API_TOKEN not configured' };
+  }
+
+  try {
+    var items = await fetchAllTeamItems(env, U21_TEAM_COLLECTION_ID, ARABIC_CMS_LOCALE_ID);
+    var map = buildU21TeamMap(items);
+    u21MemoryCache = { map: map, fetchedAt: now };
+    try {
+      await caches.default.put(U21_CACHE_KEY_URL, new Response(JSON.stringify({ map: map, fetchedAt: now }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=' + Math.floor(TEAM_MAP_TTL_MS / 1000)
+        }
+      }));
+    } catch (err) {
+      // Cache write failure is non-fatal.
+    }
+    return { map: map, error: null };
+  } catch (err) {
+    return { map: u21MemoryCache ? u21MemoryCache.map : null, error: String((err && err.message) || err) };
+  }
+}
+
 module.exports = {
+  getU21TeamArabicNameMap: getU21TeamArabicNameMap,
+  buildU21TeamMap: buildU21TeamMap,
   getTeamArabicNameMap: getTeamArabicNameMap,
   arabicTeamName: arabicTeamName
 };

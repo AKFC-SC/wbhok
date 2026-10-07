@@ -39,7 +39,19 @@ function applyArabicTeamNamesToPreview(core, h2h, homeForm, awayForm, map){
   (awayForm || []).forEach(function(m){ m.opponent = arabicTeamName(m.opponentId, map, m.opponent); });
 }
 
+// Standings rows already carry team.id (see standingsMapper.js). Only the
+// name is substituted — position, points, played/won/draw/lost, goals, form
+// and the row order are never touched. A team id with no CMS entry (every
+// U21 team, for example) keeps its SportMonks name.
+function applyArabicTeamNamesToStandings(rows, map){
+  if(!map) return;
+  (rows || []).forEach(function(row){
+    if(row && row.team) row.team.name = arabicTeamName(row.team.id, map, row.team.name);
+  });
+}
+
 module.exports = {
   applyArabicTeamNames: applyArabicTeamNames,
-  applyArabicTeamNamesToPreview: applyArabicTeamNamesToPreview
+  applyArabicTeamNamesToPreview: applyArabicTeamNamesToPreview,
+  applyArabicTeamNamesToStandings: applyArabicTeamNamesToStandings
 };

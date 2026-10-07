@@ -4,6 +4,8 @@
 // GET /api/standings              — First Team (Saudi Pro League), unchanged behavior
 // GET /api/standings?league_id=N  — any other competition (e.g. U21 Elite League, 3569);
 //                                    current season is resolved from SportMonks, never hardcoded
+// GET /api/standings?locale=ar   — same table, team names from the Arabic Team CMS (names only;
+//                                    order and numbers untouched). locale=en / absent = unchanged
 //
 // Calls SportMonks server-side (token read from a Worker Secret, never sent to the
 // browser) and returns shaped JSON for the Webflow frontend. mapper.js is verified
@@ -14,8 +16,8 @@
 import { mapSportMonksToMatchHub } from './mapper.js';
 import { mapStandings } from './standingsMapper.js';
 import { mapFixtureCore, mapH2H, mapLastFive } from './previewMapper.js';
-import { getTeamArabicNameMap } from './webflowTeams.js';
-import { applyArabicTeamNames, applyArabicTeamNamesToPreview } from './arabicTeamNames.js';
+import { getTeamArabicNameMap, getU21TeamArabicNameMap } from './webflowTeams.js';
+import { applyArabicTeamNames, applyArabicTeamNamesToPreview, applyArabicTeamNamesToStandings } from './arabicTeamNames.js';
 
 // Confirmed working combined include string (2026-08-26) — see mapper.js header.
 const INCLUDE =
@@ -223,7 +225,7 @@ async function resolveCurrentSeasonId(leagueId, env){
   return seasonId ? String(seasonId) : null;
 }
 
-async function handleStandings(env, headers, leagueId){
+async function handleStandings(env, headers, leagueId, locale){
   let seasonId;
 
   if(leagueId){
@@ -260,6 +262,20 @@ async function handleStandings(env, headers, leagueId){
     shaped = mapStandings(json.data);
   } catch (err) {
     return new Response(JSON.stringify({ error: 'Failed to map standings data' }), { status: 500, headers });
+  }
+
+  // Arabic only: swap team names for the Team CMS Arabic name. Rows, order and
+  // every number are untouched; unmapped teams (e.g. U21) keep their names.
+  if(locale === 'ar'){
+    const teamMapResult = await getTeamArabicNameMap(env);
+    let nameMap = teamMapResult.map;
+    // A league_id request (U21) also needs the U21 Team CMS names. U21 and
+    // First Team SportMonks ids never collide, so the maps simply merge.
+    if(leagueId){
+      const u21MapResult = await getU21TeamArabicNameMap(env);
+      if(u21MapResult.map) nameMap = Object.assign({}, nameMap || {}, u21MapResult.map);
+    }
+    applyArabicTeamNamesToStandings(shaped, nameMap);
   }
 
   return new Response(JSON.stringify({ standings: shaped }), { status: 200, headers });
@@ -299,7 +315,7 @@ export default {
       if(leagueId && !/^\d+$/.test(leagueId)){
         return new Response(JSON.stringify({ error: 'Invalid league_id' }), { status: 400, headers });
       }
-      return handleStandings(env, headers, leagueId);
+      return handleStandings(env, headers, leagueId, locale);
     }
 
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers });
