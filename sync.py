@@ -329,9 +329,16 @@ def get_score(fixture, team_id):
 # SPORTS MONKS FIXTURES
 # ============================================================
 
-def sm_fixtures(locale=None):
+def fixture_window_start():
 
-    today = datetime.now(timezone.utc).date()
+    # First day the SportMonks fixture query covers (see LOOKBACK_DAYS).
+    return (
+        datetime.now(timezone.utc).date()
+        - timedelta(days=LOOKBACK_DAYS)
+    )
+
+
+def sm_fixtures(locale=None):
 
     season_end = datetime(
         2027,
@@ -342,7 +349,7 @@ def sm_fixtures(locale=None):
 
     all_fixtures = []
 
-    current_start = today - timedelta(days=LOOKBACK_DAYS)
+    current_start = fixture_window_start()
 
     # SportsMonks maximum range is 100 days
     while current_start <= season_end:
@@ -414,6 +421,16 @@ def sm_fixtures(locale=None):
             "Fixtures returned:",
             len(fixtures)
         )
+
+        # An empty page comes back as HTTP 200 with only a "message"
+        # (SportMonks uses the same text for "no results" and "not in
+        # your subscription"), so surface it in the log.
+        if not fixtures and data.get("message"):
+
+            print(
+                "SPORTSMONKS MESSAGE:",
+                data.get("message")
+            )
 
         all_fixtures.extend(fixtures)
 
@@ -2154,6 +2171,69 @@ def sync_fixtures_arabic(
 
 
 # ============================================================
+# EMPTY-RESPONSE GUARD
+#
+# SportMonks answers HTTP 200 with no fixtures (instead of an error)
+# when a request is not covered by the subscription. Without this guard
+# that run "succeeds" while writing nothing, and the site silently keeps
+# stale statuses and scores (seen 2026-10-07 -> 2026-10-10).
+#
+# Zero fixtures is only treated as an error when Webflow still has
+# non-archived fixtures dated inside the same query window — so a
+# genuinely empty window (e.g. off-season) still passes. Raising here
+# happens before any Webflow write or publish.
+# ============================================================
+
+def assert_fixtures_not_silently_empty(fixtures, existing_items):
+
+    if fixtures:
+        return
+
+    window_start = fixture_window_start()
+
+    expected = []
+
+    for item in existing_items:
+
+        if item.get("isArchived"):
+            continue
+
+        field_data = item.get("fieldData") or {}
+
+        value = field_data.get("date-time")
+
+        if not value:
+            continue
+
+        try:
+
+            kickoff = parse_starting_at(value).date()
+
+        except (TypeError, ValueError):
+
+            continue
+
+        if kickoff >= window_start:
+
+            expected.append(
+                safe_text(
+                    field_data.get("sportsmonks-id")
+                    or item.get("id")
+                )
+            )
+
+    if expected:
+
+        raise RuntimeError(
+            "SportMonks returned 0 fixtures from "
+            f"{window_start.isoformat()} onward, but Webflow has "
+            f"{len(expected)} fixture(s) in that window "
+            f"(e.g. {', '.join(expected[:5])}). Check the SportMonks "
+            "subscription/token. Aborting before any Webflow write."
+        )
+
+
+# ============================================================
 # SYNC
 # ============================================================
 
@@ -2180,6 +2260,11 @@ def sync_fixtures():
     # --------------------------------------------------------
 
     existing_items = wf_items()
+
+    assert_fixtures_not_silently_empty(
+        fixtures,
+        existing_items
+    )
 
     existing_by_fixture_id = {}
 
